@@ -6,59 +6,92 @@ on:
     paths:
       - 'gpu_core/engine.py'
       - 'gpu_core/kernels.py'
+      - '.github/workflows/build-gpu-modules.yml'
   workflow_dispatch:
+  release:
+    types: [created]
 
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-        python-version: ['3.12']
+        include:
+          - os: windows-latest
+            platform: windows
+            extension: pyd
+          - os: ubuntu-latest
+            platform: linux
+            extension: so
+          - os: macos-latest
+            platform: macos
+            extension: so
     
     runs-on: ${{ matrix.os }}
     
     steps:
     - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
     
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: '3.12'
     
-    - name: Install Nuitka
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install nuitka ordered-set zstandard
+        pip install -r requirements.txt
     
-    - name: Build modules (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        python -m nuitka --module gpu_core/engine.py
-        python -m nuitka --module gpu_core/kernels.py
-        move *.pyd gpu_core/bin/windows/
-    
-    - name: Build modules (Linux)
+    - name: Install CUDA dependencies (Linux)
       if: runner.os == 'Linux'
       run: |
-        python -m nuitka --module gpu_core/engine.py
-        python -m nuitka --module gpu_core/kernels.py
-        mv *.so gpu_core/bin/linux/
+        sudo apt-get update
+        sudo apt-get install -y nvidia-cuda-toolkit || echo "CUDA toolkit installation failed, continuing..."
     
-    - name: Build modules (macOS)
-      if: runner.os == 'macOS'
+    - name: Create binary directory
       run: |
-        python -m nuitka --module gpu_core/engine.py
-        python -m nuitka --module gpu_core/kernels.py
-        mv *.so gpu_core/bin/macos/
+        python -c "import os; os.makedirs('gpu_core/bin/${{ matrix.platform }}', exist_ok=True)"
+    
+    - name: Build modules
+      run: |
+        python -m nuitka --module --output-dir=build_output gpu_core/engine.py
+        python -m nuitka --module --output-dir=build_output gpu_core/kernels.py
+    
+    - name: Move binaries (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        Get-ChildItem -Path build_output -Filter "*.${{ matrix.extension }}" | Move-Item -Destination gpu_core/bin/${{ matrix.platform }}/
+    
+    - name: Move binaries (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        find build_output -name "*.${{ matrix.extension }}" -exec mv {} gpu_core/bin/${{ matrix.platform }}/ \;
+    
+    - name: Verify binaries
+      run: |
+        python -c "import os; files = os.listdir('gpu_core/bin/${{ matrix.platform }}'); print(f'Built files: {files}'); assert len(files) >= 2, 'Expected at least 2 binary files'"
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: gpu-modules-${{ matrix.platform }}
+        path: gpu_core/bin/${{ matrix.platform }}/*
+        retention-days: 90
     
     - name: Commit binaries
+      if: github.event_name == 'push'
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        git add gpu_core/bin/
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-build: Update GPU modules for ${{ runner.os }}"
+        git add gpu_core/bin/${{ matrix.platform }}/
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-build: Update GPU modules for ${{ matrix.platform }}"
     
     - name: Push changes
+      if: github.event_name == 'push'
       uses: ad-m/github-push-action@master
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}

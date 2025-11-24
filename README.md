@@ -86,7 +86,7 @@ GPUMiner/
 │   └── dashboard.py      # TUI dashboard
 ├── gpu_core/             # GPU acceleration (proprietary)
 │   ├── __init__.py       # Platform auto-detection
-│   └── bin/              # Pre-compiled binaries
+│   └── bin/              # Pre-compiled binaries (source code protected)
 │       ├── windows/      # Windows .pyd files
 │       ├── linux/        # Linux .so files
 │       └── macos/        # macOS .so files
@@ -124,9 +124,14 @@ Typical hashrates on different GPUs:
 - Verify installation with `nvidia-smi`
 
 ### "Module 'gpu_core' not found"
-- GPU binaries should be included in the repo
-- Check that `gpu_core/bin/<platform>/` contains the correct files
-- Try reinstalling with the provided scripts
+- GPU binaries are included in the repository
+- Verify `gpu_core/bin/<platform>/` contains `.pyd` (Windows) or `.so` (Linux/macOS) files
+- Re-clone the repository if files are missing
+
+### "GPU module import failed"
+- Ensure Python version is 3.12+
+- Check that you're using the correct platform binaries
+- Verify all dependencies are installed: `pip install -r requirements.txt`
 
 
 ## License
@@ -134,7 +139,10 @@ Typical hashrates on different GPUs:
 This project uses a dual-license model:
 
 - **Core Infrastructure** (everything except `gpu_core/`): [MIT License](LICENSE)
-- **GPU Acceleration Module** (`gpu_core/`): Proprietary (source code available if competing projects emerge)
+- **GPU Acceleration Module** (`gpu_core/`): Proprietary
+  - Source code is **not** included in this repository
+  - Pre-compiled binaries are provided for Windows, Linux, and macOS
+  - Reverse engineering or decompilation is prohibited
 
 See the [LICENSE](LICENSE) file for details.
 
