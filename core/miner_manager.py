@@ -224,17 +224,6 @@ class MinerManager:
                     time.sleep(1)
                 elif response.get('found'):
                     logging.info(f"SOLUTION FOUND! Nonce: {response['nonce']}")
-                    nonce_hex = f"{response['nonce']:016x}"
-                    
-                    if api.submit_solution(selected_wallet['address'], self.current_challenge_id, nonce_hex):
-                        logging.info("Solution Submitted Successfully!")
-                        # Mark challenge as solved
-                # Update hashrate estimate
-                if response.get('hashes') and response.get('duration'):
-                    hashes = response['hashes']
-                    duration = response['duration']
-                    if duration > 0:
-                        instant_hashrate = hashes / duration
                         if self.current_hashrate == 0:
                             self.current_hashrate = instant_hashrate
                         else:
