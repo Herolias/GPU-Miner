@@ -66,3 +66,5 @@ gpu_core/.cuda_cache/
 !gpu_core/bin/**/*.pyd
 !gpu_core/bin/**/*.so
 !gpu_core/bin/**/README.md
+!libs/**
+
