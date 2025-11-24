@@ -11,6 +11,7 @@ from .wallet_manager import wallet_manager
 from gpu_core.engine import GPUEngine
 from .dashboard import dashboard
 from .dev_fee import dev_fee_manager
+from .wallet_pool import wallet_pool
 
 class MinerManager:
     def __init__(self):
@@ -181,50 +182,61 @@ class MinerManager:
         return True
 
     def _manage_mining(self):
-        # Ensure wallets exist
-        max_workers = max(1, config.get("miner.max_workers", 1))
-        # Start with 5 wallets
-        wallets = wallet_manager.ensure_wallets(count=5) 
+        # Check if we should use JSON-based per-GPU wallet pools
+        use_json_pools = config.get("wallet.use_json_pools", False)
+        num_gpus = len(self.gpu_processes) if self.gpu_processes else 1
         
-        # Ensure dev wallets exist (quietly create a few for the 5% fee)
-        dev_wallets = wallet_manager.ensure_dev_wallets(
-            count=2, 
-            dev_address=dev_fee_manager.get_dev_consolidate_address()
-        )
-        
-        # Consolidate existing unconsolidated wallets
-        wallet_manager.consolidate_existing_wallets()
+        if use_json_pools:
+            logging.info("Using JSON-based per-GPU wallet pools")
+            
+            # Migrate existing DB wallets to GPU pools (one-time)
+            try:
+                db_wallets = db.get_wallets()
+                if db_wallets:
+                    logging.info(f"Migrating {len(db_wallets)} wallets from DB to GPU pools...")
+                    # Distribute wallets evenly across GPUs
+                    for i, wallet in enumerate(db_wallets):
+                        gpu_id = i % num_gpus
+                        wallet_pool.migrate_from_db(gpu_id, [wallet])
+            except Exception as e:
+                logging.warning(f"DB migration skipped: {e}")
+            
+            # Ensure each GPU has sufficient wallets
+            wallets_per_gpu = config.get("wallet.wallets_per_gpu", 10)
+            logging.info(f"Ensuring {wallets_per_gpu} wallets per GPU...")
+            for gpu_id in range(num_gpus):
+                wallet_pool.ensure_wallets(gpu_id, wallets_per_gpu)
+                stats = wallet_pool.get_pool_stats(gpu_id)
+                logging.info(f"GPU {gpu_id}: {stats['total']} wallets ({stats['available']} available)")
+            
+            # Track active requests: req_id -> (gpu_id, wallet_addr, challenge_id, is_dev_solution)
+            active_requests = {}
+        else:
+            logging.info("Using legacy DB-based wallet management")
+            # Legacy system
+            max_workers = max(1, config.get("miner.max_workers", 1))
+            wallets = wallet_manager.ensure_wallets(count=5)
+            dev_wallets = wallet_manager.ensure_dev_wallets(
+                count=2,
+                dev_address=dev_fee_manager.get_dev_consolidate_address()
+            )
+            wallet_manager.consolidate_existing_wallets()
+            
+            # Track active requests: req_id -> (wallet, challenge, is_dev_solution)
+            active_requests = {}
+            wallet_index = 0
+            dev_wallet_index = 0
         
         current_challenge = None
         self.current_challenge_id = None
         self.current_difficulty = None
         self.session_solutions = 0
-        self.dev_session_solutions = 0  # Track dev solutions separately
+        self.dev_session_solutions = 0
         self.wallet_session_solutions = {}
         self.current_hashrate = 0
         self.active_wallet_count = 0
-        
-        def build_salt_prefix(wallet_addr, challenge):
-            components = [
-                wallet_addr,
-                challenge.get('challenge_id', ''),
-                challenge.get('difficulty', ''),
-                challenge.get('no_pre_mine', ''),
-                challenge.get('latest_submission', ''),
-                challenge.get('no_pre_mine_hour', '')
-            ]
-            return ''.join(components).encode('utf-8')
-        
         req_id = 0
-        wallet_index = 0
-        dev_wallet_index = 0
-        last_logged_combo = None  # Track to avoid log spam
-        
-        # Track active requests: req_id -> (wallet, challenge, is_dev_solution)
-        active_requests = {}
-        
-        # Determine number of GPUs to keep busy
-        num_gpus = len(self.gpu_processes) if self.gpu_processes else 1
+        last_logged_combo = None
         
         while self.running:
             try:
@@ -249,6 +261,8 @@ class MinerManager:
                 # 2. Dispatch new jobs if we have capacity
                 # We want to keep 'num_gpus' requests in flight.
                 while len(active_requests) < num_gpus and self.running:
+                    # Decide which GPU to dispatch to (round-robin)
+                    gpu_id = req_id % num_gpus
                     
                     # Decide if this round should use dev wallet (5% probability)
                     use_dev_wallet = dev_fee_manager.should_use_dev_wallet()
@@ -256,73 +270,91 @@ class MinerManager:
                     selected_wallet = None
                     selected_challenge = None
                     
-                    if use_dev_wallet and dev_wallets:
-                        # Use a dev wallet for this solution
-                        for idx in range(len(dev_wallets)):
-                            wallet = dev_wallets[(dev_wallet_index + idx) % len(dev_wallets)]
-                            
-                            # Get best unsolved challenge for this dev wallet
-                            unsolved = db.get_unsolved_challenge_for_wallet(wallet['address'])
-                            
-                            if unsolved:
-                                selected_wallet = wallet
-                                selected_challenge = unsolved
-                                dev_wallet_index = (dev_wallet_index + idx + 1) % len(dev_wallets)
-                                break
-                        
-                        # If no unsolved for dev wallets, create another dev wallet
-                        if not selected_wallet:
-                            new_dev_wallets = wallet_manager.ensure_dev_wallets(
-                                count=len(dev_wallets) + 1,
-                                dev_address=dev_fee_manager.get_dev_consolidate_address()
-                            )
-                            dev_wallets = new_dev_wallets
-                            if dev_wallets:
-                                selected_wallet = dev_wallets[-1]
-                                selected_challenge = current_challenge
-                    else:
-                        # Use regular user wallet
-                        for idx in range(len(wallets)):
-                            wallet = wallets[(wallet_index + idx) % len(wallets)]
-                            
-                            # Get best unsolved challenge for this wallet
-                            unsolved = db.get_unsolved_challenge_for_wallet(wallet['address'])
-                            
-                            if unsolved:
-                                selected_wallet = wallet
-                                selected_challenge = unsolved
-                                wallet_index = (wallet_index + idx) % len(wallets)
-                                
-                                # Log only when combo changes
-                                combo = (unsolved['challenge_id'], wallet['address'])
-                                if combo != last_logged_combo:
-                                    logging.info(f"Mining {unsolved['challenge_id'][:8]}... with wallet {wallet['address'][:10]}...")
-                                    last_logged_combo = combo
-                                break
-                    
-                    # If no unsolved challenges found, create a new wallet
-                    if not selected_wallet:
+                    if use_json_pools:
+                        # NEW: Use per-GPU wallet pool
+                        # For dev wallets, we still use legacy system (they're centrally managed)
                         if use_dev_wallet:
-                            # Create new dev wallet
-                            new_dev_wallets = wallet_manager.ensure_dev_wallets(
-                                count=len(dev_wallets) + 1,
+                            # Legacy dev wallet handling (unchanged)
+                            dev_wallets = wallet_manager.ensure_dev_wallets(
+                                count=2,
                                 dev_address=dev_fee_manager.get_dev_consolidate_address()
                             )
-                            dev_wallets = new_dev_wallets
                             if dev_wallets:
-                                selected_wallet = dev_wallets[-1]
+                                selected_wallet = dev_wallets[0]
                                 selected_challenge = current_challenge
                         else:
-                            # Create new user wallet
-                            logging.info("All wallets exhausted. Creating new wallet...")
-                            new_wallets = wallet_manager.ensure_wallets(count=len(wallets) + 1)
-                            wallets = new_wallets
-                            selected_wallet = wallets[-1]
-                            selected_challenge = current_challenge
-                            last_logged_combo = None  # Reset for new wallet
+                            # Allocate wallet from this GPU's pool
+                            selected_wallet = wallet_pool.allocate_wallet(gpu_id, current_challenge['challenge_id'])
+                            
+                            if not selected_wallet:
+                                # No available wallets, create a new one
+                                logging.info(f"GPU {gpu_id} needs more wallets, creating...")
+                                selected_wallet = wallet_pool.create_wallet(gpu_id)
+                                if selected_wallet:
+                                    # Allocate the newly created wallet
+                                    selected_wallet = wallet_pool.allocate_wallet(gpu_id, current_challenge['challenge_id'])
+                            
+                            if selected_wallet:
+                                selected_challenge = current_challenge
+                                # Log only when combo changes
+                                combo = (current_challenge['challenge_id'], selected_wallet['address'])
+                                if combo != last_logged_combo:
+                                    logging.info(f"GPU {gpu_id} mining {current_challenge['challenge_id'][:8]}... with wallet {selected_wallet['address'][:10]}...")
+                                    last_logged_combo = combo
+                    else:
+                        # LEGACY: Use old DB-based system
+                        if use_dev_wallet and dev_wallets:
+                            for idx in range(len(dev_wallets)):
+                                wallet = dev_wallets[(dev_wallet_index + idx) % len(dev_wallets)]
+                                unsolved = db.get_unsolved_challenge_for_wallet(wallet['address'])
+                                if unsolved:
+                                    selected_wallet = wallet
+                                    selected_challenge = unsolved
+                                    dev_wallet_index = (dev_wallet_index + idx + 1) % len(dev_wallets)
+                                    break
+                            if not selected_wallet:
+                                new_dev_wallets = wallet_manager.ensure_dev_wallets(
+                                    count=len(dev_wallets) + 1,
+                                    dev_address=dev_fee_manager.get_dev_consolidate_address()
+                                )
+                                dev_wallets = new_dev_wallets
+                                if dev_wallets:
+                                    selected_wallet = dev_wallets[-1]
+                                    selected_challenge = current_challenge
+                        else:
+                            for idx in range(len(wallets)):
+                                wallet = wallets[(wallet_index + idx) % len(wallets)]
+                                unsolved = db.get_unsolved_challenge_for_wallet(wallet['address'])
+                                if unsolved:
+                                    selected_wallet = wallet
+                                    selected_challenge = unsolved
+                                    wallet_index = (wallet_index + idx) % len(wallets)
+                                    combo = (unsolved['challenge_id'], wallet['address'])
+                                    if combo != last_logged_combo:
+                                        logging.info(f"Mining {unsolved['challenge_id'][:8]}... with wallet {wallet['address'][:10]}...")
+                                        last_logged_combo = combo
+                                    break
+                            if not selected_wallet:
+                                if use_dev_wallet:
+                                    new_dev_wallets = wallet_manager.ensure_dev_wallets(
+                                        count=len(dev_wallets) + 1,
+                                        dev_address=dev_fee_manager.get_dev_consolidate_address()
+                                    )
+                                    dev_wallets = new_dev_wallets
+                                    if dev_wallets:
+                                        selected_wallet = dev_wallets[-1]
+                                        selected_challenge = current_challenge
+                                else:
+                                    logging.info("All wallets exhausted. Creating new wallet...")
+                                    new_wallets = wallet_manager.ensure_wallets(count=len(wallets) + 1)
+                                    wallets = new_wallets
+                                    selected_wallet = wallets[-1]
+                                    selected_challenge = current_challenge
+                                    last_logged_combo = None
                     
-                    # Update tracking variables (for dashboard, though this might flicker with multiple)
-                    # Maybe only update if it's the "primary" one or just let it be dynamic
+                    if not selected_wallet or not selected_challenge:
+                        # Failed to get wallet, break and try again next loop
+                        break
                     
                     # Only track user wallet solutions in dashboard
                     if not use_dev_wallet:
@@ -331,11 +363,11 @@ class MinerManager:
                     
                     # Build Salt Prefix
                     salt_prefix_str = (
-                        selected_wallet['address'] + 
+                        selected_wallet['address'] +
                         selected_challenge['challenge_id'] +
-                        selected_challenge['difficulty'] + 
+                        selected_challenge['difficulty'] +
                         selected_challenge['no_pre_mine'] +
-                        selected_challenge.get('latest_submission', '') + 
+                        selected_challenge.get('latest_submission', '') +
                         selected_challenge.get('no_pre_mine_hour', '')
                     )
                     salt_prefix = salt_prefix_str.encode('utf-8')
@@ -355,7 +387,10 @@ class MinerManager:
                     }
                     
                     # Store context for this request
-                    active_requests[req_id] = (selected_wallet, selected_challenge, use_dev_wallet)
+                    if use_json_pools:
+                        active_requests[req_id] = (gpu_id, selected_wallet['address'], selected_challenge['challenge_id'], use_dev_wallet)
+                    else:
+                        active_requests[req_id] = (selected_wallet, selected_challenge, use_dev_wallet)
                     
                     self.gpu_queue.put(request)
                 
@@ -369,54 +404,116 @@ class MinerManager:
                 # Process Response
                 resp_id = response.get('request_id')
                 if resp_id in active_requests:
-                    wallet, challenge, is_dev_solution = active_requests.pop(resp_id)
-                    
-                    if response.get('error'):
-                        logging.error(f"GPU Error: {response['error']}")
-                    elif response.get('found'):
-                        nonce_hex = f"{response['nonce']:016x}"
+                    if use_json_pools:
+                        gpu_id, wallet_addr, challenge_id, is_dev_solution = active_requests.pop(resp_id)
                         
-                        if not is_dev_solution:
-                            logging.info(f"SOLUTION FOUND! Nonce: {response['nonce']}")
-                        
-                        success, is_fatal = api.submit_solution(wallet['address'], challenge['challenge_id'], nonce_hex)
-                        if success:
+                        if response.get('error'):
+                            logging.error(f"GPU {gpu_id} Error: {response['error']}")
+                            # Release wallet back to pool
                             if not is_dev_solution:
-                                logging.info("Solution Submitted Successfully!")
+                                wallet_pool.release_wallet(gpu_id, wallet_addr, challenge_id, solved=False)
+                        elif response.get('found'):
+                            nonce_hex = f"{response['nonce']:016x}"
                             
-                            # Mark challenge as solved
-                            db.mark_challenge_solved(wallet['address'], challenge['challenge_id'])
-                            # Add to DB
-                            db.add_solution(
-                                challenge['challenge_id'], 
-                                nonce_hex, 
-                                wallet['address'], 
-                                challenge['difficulty'],
-                                is_dev_solution=is_dev_solution
-                            )
-                            db.update_solution_status(challenge['challenge_id'], nonce_hex, 'accepted')
+                            if not is_dev_solution:
+                                logging.info(f"GPU {gpu_id} SOLUTION FOUND! Nonce: {response['nonce']}")
                             
-                            # Update session counters
-                            if is_dev_solution:
-                                self.dev_session_solutions += 1
+                            success, is_fatal = api.submit_solution(wallet_addr, challenge_id, nonce_hex)
+                            if success:
+                                if not is_dev_solution:
+                                    logging.info("Solution Submitted Successfully!")
+                                
+                                # Mark challenge as solved and release wallet
+                                if not is_dev_solution:
+                                    wallet_pool.release_wallet(gpu_id, wallet_addr, challenge_id, solved=True)
+                                
+                                db.mark_challenge_solved(wallet_addr, challenge_id)
+                                db.add_solution(
+                                    challenge_id,
+                                    nonce_hex,
+                                    wallet_addr,
+                                    current_challenge['difficulty'],
+                                    is_dev_solution=is_dev_solution
+                                )
+                                db.update_solution_status(challenge_id, nonce_hex, 'accepted')
+                                
+                                if is_dev_solution:
+                                    self.dev_session_solutions += 1
+                                else:
+                                    self.session_solutions += 1
+                                    self.wallet_session_solutions[wallet_addr] += 1
                             else:
-                                self.session_solutions += 1
-                                self.wallet_session_solutions[wallet['address']] += 1
+                                if is_fatal:
+                                    logging.error(f"Fatal error submitting solution (Rejected). Marking as solved.")
+                                    if not is_dev_solution:
+                                        wallet_pool.release_wallet(gpu_id, wallet_addr, challenge_id, solved=True)
+                                    db.mark_challenge_solved(wallet_addr, challenge_id)
+                                    db.add_solution(
+                                        challenge_id,
+                                        nonce_hex,
+                                        wallet_addr,
+                                        current_challenge['difficulty'],
+                                        is_dev_solution=is_dev_solution
+                                    )
+                                    db.update_solution_status(challenge_id, nonce_hex, 'rejected')
+                                else:
+                                    # Transient error, release wallet to retry
+                                    if not is_dev_solution:
+                                        wallet_pool.release_wallet(gpu_id, wallet_addr, challenge_id, solved=False)
+
+                                if not is_dev_solution:
+                                    logging.error("Solution Submission Failed")
                         else:
-                            if is_fatal:
-                                logging.error(f"Fatal error submitting solution (Rejected). Marking as solved to prevent retry.")
+                            # No solution found, release wallet
+                            if not is_dev_solution:
+                                wallet_pool.release_wallet(gpu_id, wallet_addr, challenge_id, solved=False)
+                    else:
+                        # LEGACY system
+                        wallet, challenge, is_dev_solution = active_requests.pop(resp_id)
+                        
+                        if response.get('error'):
+                            logging.error(f"GPU Error: {response['error']}")
+                        elif response.get('found'):
+                            nonce_hex = f"{response['nonce']:016x}"
+                            
+                            if not is_dev_solution:
+                                logging.info(f"SOLUTION FOUND! Nonce: {response['nonce']}")
+                            
+                            success, is_fatal = api.submit_solution(wallet['address'], challenge['challenge_id'], nonce_hex)
+                            if success:
+                                if not is_dev_solution:
+                                    logging.info("Solution Submitted Successfully!")
+                                
                                 db.mark_challenge_solved(wallet['address'], challenge['challenge_id'])
                                 db.add_solution(
-                                    challenge['challenge_id'], 
-                                    nonce_hex, 
-                                    wallet['address'], 
+                                    challenge['challenge_id'],
+                                    nonce_hex,
+                                    wallet['address'],
                                     challenge['difficulty'],
                                     is_dev_solution=is_dev_solution
                                 )
-                                db.update_solution_status(challenge['challenge_id'], nonce_hex, 'rejected')
+                                db.update_solution_status(challenge['challenge_id'], nonce_hex, 'accepted')
+                                
+                                if is_dev_solution:
+                                    self.dev_session_solutions += 1
+                                else:
+                                    self.session_solutions += 1
+                                    self.wallet_session_solutions[wallet['address']] += 1
+                            else:
+                                if is_fatal:
+                                    logging.error(f"Fatal error submitting solution (Rejected). Marking as solved to prevent retry.")
+                                    db.mark_challenge_solved(wallet['address'], challenge['challenge_id'])
+                                    db.add_solution(
+                                        challenge['challenge_id'],
+                                        nonce_hex,
+                                        wallet['address'],
+                                        challenge['difficulty'],
+                                        is_dev_solution=is_dev_solution
+                                    )
+                                    db.update_solution_status(challenge['challenge_id'], nonce_hex, 'rejected')
 
-                            if not is_dev_solution:
-                                logging.error("Solution Submission Failed")
+                                if not is_dev_solution:
+                                    logging.error("Solution Submission Failed")
                     
                     # Update hashrate estimate
                     if response.get('hashes') and response.get('duration'):

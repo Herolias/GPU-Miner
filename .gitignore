@@ -38,6 +38,7 @@ Thumbs.db
 
 # Sensitive
 .env
+*.json
 *.pem
 *.key
 WORKFLOW.md
