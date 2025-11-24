@@ -7,8 +7,8 @@ miner:
   donation_enabled: true
   donation_rate: 0.05
   max_workers: 1
-  name: GPUMiner
-  version: 0.0.1
+  name: GPU-Miner
+  version: 0.0.2
 wallet:
   consolidate_address: null
   file: wallets.db
