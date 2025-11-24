@@ -17,7 +17,7 @@ class Dashboard:
     def __init__(self):
         self.start_time = datetime.now()
         self.lock = threading.Lock()
-        
+
         # Stats
         self.total_hashrate = 0.0
         self.session_solutions = 0
@@ -26,7 +26,10 @@ class Dashboard:
         self.active_wallets = 0
         self.current_challenge = "Waiting..."
         self.difficulty = "N/A"
-        
+        self.loading_message = None
+        self._spinner_frames = ['|', '/', '-', '\\']
+        self._spinner_index = 0
+
         # Console setup
         os.system('color') # Enable ANSI on Windows
 
@@ -40,25 +43,55 @@ class Dashboard:
             self.current_challenge = challenge
             self.difficulty = difficulty
 
+    def set_loading(self, message):
+        """Set or clear a loading message shown instead of the dashboard."""
+        with self.lock:
+            self.loading_message = message
+            self._spinner_index = 0
+
     def _get_uptime(self):
         delta = datetime.now() - self.start_time
         return str(delta).split('.')[0] # Remove microseconds
 
     def _clear_screen(self):
-        os.system('cls' if os.name == 'nt' else 'clear')
+        # Use ANSI escape codes to reset cursor and clear from cursor to end
+        # This reduces flicker compared to clearing the entire screen
+        print('\033[H\033[J', end='')
+
+    def _render_loading(self):
+        spinner = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
+        self._spinner_index += 1
+
+        print(f"{CYAN}{BOLD}")
+        print(r"""
+   _____  _____   _    _     __  __  _____  _   _  ______  _____  
+  / ____||  __ \ | |  | |   |  \/  ||_   _|| \ | ||  ____||  __ \ 
+ | |  __ | |__) || |  | |   | \  / |  | |  |  \| || |__   | |__) |
+ | | |_ ||  ___/ | |  | |   | |\/| |  | |  | . ` ||  __|  |  _  / 
+ | |__| || |     | |__| |   | |  | | _| |_ | |\  || |____ | | \ \ 
+  \_____||_|      \____/    |_|  |_||_____||_| \_||______||_|  \_\                                                                                                                               
+""")
+        print(f"{RESET}")
+        print(f"{BOLD}{spinner} {self.loading_message or 'Loading...'}{RESET}")
+        print("\nPlease wait while the CUDA kernels are being built...")
 
     def render(self):
         with self.lock:
             self._clear_screen()
-            
+
+            if self.loading_message:
+                self._render_loading()
+                return
+
             # Header
             print(f"{CYAN}{BOLD}")
             print(r"""
-   ______  ____  __  __      __  __  _                     
-  / ____/ / __ \/ / / /     /  |/  /(_)___  ___  _____     
- / / __  / /_/ / / / /     / /|_/ // / __ \/ _ \/ ___/     
-/ /_/ / / ____/ /_/ /     / /  / // / / / /  __/ /         
-\____/ /_/    \____/     /_/  /_//_/_/ /_/\___/_/          
+    _____  _____   _    _     __  __  _____  _   _  ______  _____  
+  / ____||  __ \ | |  | |   |  \/  ||_   _|| \ | ||  ____||  __ \ 
+ | |  __ | |__) || |  | |   | \  / |  | |  |  \| || |__   | |__) |
+ | | |_ ||  ___/ | |  | |   | |\/| |  | |  | . ` ||  __|  |  _  / 
+ | |__| || |     | |__| |   | |  | | _| |_ | |\  || |____ | | \ \ 
+  \_____||_|      \____/    |_|  |_||_____||_| \_||______||_|  \_\                                                                
                                                        """)
             print(f"{RESET}")
             
@@ -70,7 +103,7 @@ class Dashboard:
             
             # Main Stats
             print(f"\n{BOLD}Mining Status:{RESET}")
-            print(f"  Active Wallets:    {self.active_wallets}")
+            # print(f"  Active Wallets:    {self.active_wallets}")  # Debug only
             
             challenge_display = self.current_challenge if self.current_challenge else "Waiting..."
             if len(challenge_display) > 16:
@@ -91,12 +124,12 @@ class Dashboard:
             print(f"  Session Found:     {GREEN}{self.session_solutions}{RESET}")
             print(f"  All-Time Found:    {GREEN}{self.all_time_solutions}{RESET}")
             
-            # Wallet Stats
-            if self.wallet_solutions:
-                print(f"\n{BOLD}Wallet Performance (Session):{RESET}")
-                for wallet, count in self.wallet_solutions.items():
-                    short_addr = f"{wallet[:10]}...{wallet[-4:]}"
-                    print(f"  {short_addr}: {count} solutions")
+            # Wallet Stats (Debug only)
+            # if self.wallet_solutions:
+            #     print(f"\n{BOLD}Wallet Performance (Session):{RESET}")
+            #     for wallet, count in self.wallet_solutions.items():
+            #         short_addr = f"{wallet[:10]}...{wallet[-4:]}"
+            #         print(f"  {short_addr}: {count} solutions")
             
             # Consolidation
             consolidation_addr = config.get("wallet.consolidate_address")

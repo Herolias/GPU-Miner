@@ -66,6 +66,7 @@ class Database:
                     challenge_id TEXT PRIMARY KEY,
                     difficulty TEXT,
                     no_pre_mine TEXT,
+                    no_pre_mine_hour TEXT,
                     latest_submission TIMESTAMP,
                     first_seen_at TIMESTAMP
                 )
@@ -91,6 +92,11 @@ class Database:
             
             try:
                 cursor.execute('ALTER TABLE solutions ADD COLUMN is_dev_solution BOOLEAN DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:
+                cursor.execute('ALTER TABLE challenges ADD COLUMN no_pre_mine_hour TEXT')
             except sqlite3.OperationalError:
                 pass  # Column already exists
             
@@ -231,12 +237,13 @@ class Database:
         try:
             conn.execute('''
                 INSERT OR REPLACE INTO challenges 
-                (challenge_id, difficulty, no_pre_mine, latest_submission, first_seen_at)
-                VALUES (?, ?, ?, ?, ?)
+                (challenge_id, difficulty, no_pre_mine, no_pre_mine_hour, latest_submission, first_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', (
                 challenge['challenge_id'],
                 challenge['difficulty'],
                 challenge['no_pre_mine'],
+                challenge.get('no_pre_mine_hour', ''),
                 challenge.get('latest_submission'),
                 datetime.now().isoformat()
             ))
@@ -255,7 +262,7 @@ class Database:
         try:
             now = datetime.now(timezone.utc)
             cursor = conn.execute('''
-                SELECT challenge_id, difficulty, no_pre_mine, latest_submission
+                SELECT challenge_id, difficulty, no_pre_mine, no_pre_mine_hour, latest_submission
                 FROM challenges
                 WHERE challenge_id NOT IN (
                     SELECT challenge_id FROM wallet_challenges WHERE wallet_address = ?
@@ -267,7 +274,7 @@ class Database:
             best_deadline = None
             
             for row in cursor.fetchall():
-                challenge_id, difficulty, no_pre_mine, latest_submission = row
+                challenge_id, difficulty, no_pre_mine, no_pre_mine_hour, latest_submission = row
                 
                 # Parse deadline
                 if not latest_submission:
@@ -295,7 +302,7 @@ class Database:
                         'difficulty': difficulty,
                         'no_pre_mine': no_pre_mine,
                         'latest_submission': latest_submission,
-                        'no_pre_mine_hour': ''
+                        'no_pre_mine_hour': no_pre_mine_hour if no_pre_mine_hour else ''
                     }
                     best_diff = difficulty_val
                     best_deadline = deadline
@@ -305,7 +312,7 @@ class Database:
                         'difficulty': difficulty,
                         'no_pre_mine': no_pre_mine,
                         'latest_submission': latest_submission,
-                        'no_pre_mine_hour': ''
+                        'no_pre_mine_hour': no_pre_mine_hour if no_pre_mine_hour else ''
                     }
                     best_deadline = deadline
             

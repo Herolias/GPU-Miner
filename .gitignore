@@ -40,6 +40,7 @@ Thumbs.db
 .env
 *.pem
 *.key
+WORKFLOW.md
 
 # Test & Coverage
 .pytest_cache/
@@ -52,15 +53,18 @@ challenges.json
 developer_addresses.json
 
 # GPU Source Code (proprietary - keep compiled binaries only)
+# Exclude proprietary source files
 gpu_core/engine.py
 gpu_core/kernels.py
 gpu_core/.cuda_cache/
 *.build/
 *.pyi
 
-# Keep these GPU files
+# Keep these GPU files (binaries and loaders)
 !gpu_core/__init__.py
 !gpu_core/bin/
 !gpu_core/bin/**/*.pyd
 !gpu_core/bin/**/*.so
 !gpu_core/bin/**/README.md
+!libs/**
+

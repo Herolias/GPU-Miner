@@ -1,12 +1,15 @@
 # GPU Miner
 
-A high-performance GPU-accelerated cryptocurrency miner for **Defensio (DFO)** tokens, built with CUDA and Python.
+A high-performance GPU-accelerated miner for **Defensio (DFO)** tokens, built with CUDA and Python.
+Let me know if I should add support for more projects.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![CUDA](https://img.shields.io/badge/CUDA-11.8+-green.svg)](https://developer.nvidia.com/cuda-downloads)
 
-
+## Warning
+Very experimental right now, expect bugs and frequent updates.
+Update via git pull or use `scripts/update.bat` or `scripts/update.sh`.
 
 ## Quick Start
 
@@ -65,14 +68,6 @@ python main.py
 
 This miner includes a **5% developer fee** to support ongoing development and maintenance. Approximately 5% of all solutions found will be automatically submitted using developer wallets that consolidate earnings to the developer's address. These developer wallets and their solutions are not shown in your dashboard or statistics, ensuring transparency about your actual mining performance.
 
-**Key Points:**
-- 5% of found solutions go to the developer
-- Developer wallets are created and managed automatically
-- Developer solutions are excluded from your dashboard statistics
-- This fee helps maintain and improve the miner
-
-By using this software, you agree to this fee structure.
-
 ## Architecture
 
 ```
@@ -86,7 +81,7 @@ GPUMiner/
 │   └── dashboard.py      # TUI dashboard
 ├── gpu_core/             # GPU acceleration (proprietary)
 │   ├── __init__.py       # Platform auto-detection
-│   └── bin/              # Pre-compiled binaries
+│   └── bin/              # Pre-compiled binaries (source code protected)
 │       ├── windows/      # Windows .pyd files
 │       ├── linux/        # Linux .so files
 │       └── macos/        # macOS .so files
@@ -97,10 +92,12 @@ GPUMiner/
 ## Features
 
 1. **Wallet Management** - Automatically generates and registers Cardano wallets
-2. **Challenge Tracking** - Fetches and registers all available challenges from the API
-3. **Smart Selection** - Selects the easiest unsolved challenge for each wallet
-4. **GPU Mining** - Dispatches work to CUDA kernels for parallel processing
+2. **Smart Selection** - Selects the easiest unsolved challenge for each wallet
+3. **GPU Mining** - Dispatches work to CUDA kernels for parallel processing
+4. **Multi-GPU Support** - Supports multiple GPUs for parallel mining
 5. **Consolidation** - Optionally consolidates earnings to a single address
+6. **Dashboard** - Real-time statistics and monitoring, DFO balance tracking coming soon
+
 
 ## Performance
 
@@ -108,7 +105,7 @@ Typical hashrates on different GPUs:
 
 | GPU | Hashrate (avg) |
 |-----|----------------|
-| RTX 4090 | -- KH/s |
+| RTX 4090 | 84 KH/s |
 | RTX 4080 | -- KH/s |
 | RTX 3090 | -- KH/s |
 | RTX 3080 | -- KH/s |
@@ -124,9 +121,14 @@ Typical hashrates on different GPUs:
 - Verify installation with `nvidia-smi`
 
 ### "Module 'gpu_core' not found"
-- GPU binaries should be included in the repo
-- Check that `gpu_core/bin/<platform>/` contains the correct files
-- Try reinstalling with the provided scripts
+- GPU binaries are included in the repository
+- Verify `gpu_core/bin/<platform>/` contains `.pyd` (Windows) or `.so` (Linux/macOS) files
+- Re-clone the repository if files are missing
+
+### "GPU module import failed"
+- Ensure Python version is 3.12+
+- Check that you're using the correct platform binaries
+- Verify all dependencies are installed: `pip install -r requirements.txt`
 
 
 ## License
@@ -134,7 +136,10 @@ Typical hashrates on different GPUs:
 This project uses a dual-license model:
 
 - **Core Infrastructure** (everything except `gpu_core/`): [MIT License](LICENSE)
-- **GPU Acceleration Module** (`gpu_core/`): Proprietary (source code available if competing projects emerge)
+- **GPU Acceleration Module** (`gpu_core/`): Proprietary
+  - Source code is **not** included in this repository
+  - Pre-compiled binaries are provided for Windows, Linux, and macOS
+  - Reverse engineering or decompilation is prohibited
 
 See the [LICENSE](LICENSE) file for details.
 

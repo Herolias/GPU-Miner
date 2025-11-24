@@ -1,7 +1,9 @@
 import sys
-import os
 import platform
 import logging
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 class ROMHandler:
     def __init__(self):
@@ -22,6 +24,9 @@ class ROMHandler:
         platform_map = {
             ('windows', 'x64'): 'windows-x64',
             ('linux', 'x64'): 'linux-x64',
+            ('linux', 'arm64'): 'linux-arm64',
+            ('darwin', 'x64'): 'macos-x64',
+            ('darwin', 'arm64'): 'macos-arm64',
         }
 
         key = (system, arch)
@@ -29,9 +34,14 @@ class ROMHandler:
             logging.error(f"Unsupported platform: {system} {arch}")
             return None
 
-        lib_dir = os.path.join(os.getcwd(), 'libs', platform_map[key])
-        if lib_dir not in sys.path:
-            sys.path.insert(0, lib_dir)
+        lib_dir = BASE_DIR / 'libs' / platform_map[key]
+        if not lib_dir.exists():
+            logging.error(f"ashmaize library directory missing: {lib_dir}")
+            return None
+
+        lib_dir_str = str(lib_dir)
+        if lib_dir_str not in sys.path:
+            sys.path.insert(0, lib_dir_str)
 
         try:
             import ashmaize_py

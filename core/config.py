@@ -7,8 +7,6 @@ DEFAULT_CONFIG = {
         "name": "MidnightGPU",
         "version": "1.0.0",
         "api_url": "https://mine.defensio.io/api",
-        "donation_enabled": True,
-        "donation_rate": 0.05,
         "max_workers": 1,
     },
     "gpu": {
