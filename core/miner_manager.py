@@ -37,9 +37,29 @@ class MinerManager:
 
     def stop(self):
         self.running = False
-        if self.gpu_process:
-            self.gpu_queue.put({'type': 'shutdown'})
-            self.gpu_process.join()
+        logging.info("Stopping Miner Manager...")
+        
+        if self.gpu_process and self.gpu_process.is_alive():
+            # Send shutdown request
+            try:
+                self.gpu_queue.put({'type': 'shutdown'}, timeout=1)
+            except:
+                pass
+            
+            # Wait up to 3 seconds for clean shutdown
+            self.gpu_process.join(timeout=3)
+            
+            # Force terminate if still running
+            if self.gpu_process.is_alive():
+                logging.warning("GPU process didn't stop cleanly, terminating...")
+                self.gpu_process.terminate()
+                self.gpu_process.join(timeout=1)
+                
+                # Kill if still alive
+                if self.gpu_process.is_alive():
+                    self.gpu_process.kill()
+                    self.gpu_process.join()
+        
         logging.info("Miner Manager stopped")
 
     def _update_dashboard_loop(self):
@@ -73,6 +93,9 @@ class MinerManager:
         max_workers = config.get("miner.max_workers", 1)
         # Start with 5 wallets
         wallets = wallet_manager.ensure_wallets(count=5) 
+        
+        # Consolidate existing unconsolidated wallets
+        wallet_manager.consolidate_existing_wallets()
         
         current_challenge = None
         self.current_challenge_id = None

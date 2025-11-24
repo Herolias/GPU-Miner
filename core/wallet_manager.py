@@ -123,5 +123,21 @@ class WalletManager:
 
         return db.get_wallets()
 
+    def consolidate_existing_wallets(self):
+        """Consolidate any existing wallets that haven't been consolidated yet."""
+        consolidate_address = config.get('wallet.consolidate_address')
+        if not consolidate_address:
+            return  # No consolidation configured
+        
+        wallets = db.get_wallets()
+        unconsolidated = [w for w in wallets if not w.get('is_consolidated')]
+        
+        if not unconsolidated:
+            return
+        
+        logging.info(f"Consolidating {len(unconsolidated)} existing wallets...")
+        for wallet in unconsolidated:
+            self._consolidate_wallet(wallet)
+
 # Global instance
 wallet_manager = WalletManager()

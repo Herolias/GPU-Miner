@@ -123,16 +123,20 @@ class GPUEngine(mp.Process):
         return entry
 
     def _main_loop(self):
+        self.logger.info("GPU Engine main loop started")
+        
         while not self.shutdown_event.is_set():
             try:
                 req = self.request_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
 
-            if req['type'] == 'shutdown':
+            if req.get('type') == 'shutdown':
+                self.logger.info("Shutdown request received")
+                self.shutdown_event.set()
                 break
             
-            if req['type'] == 'mine':
+            if req.get('type') == 'mine':
                 self._execute_mine(req)
 
     def _execute_mine(self, req):
