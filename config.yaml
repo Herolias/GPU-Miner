@@ -1,0 +1,14 @@
+gpu:
+  batch_size: 1000000
+  blocks_per_sm: 0
+  enabled: true
+miner:
+  api_url: https://mine.defensio.io/api
+  donation_enabled: true
+  donation_rate: 0.05
+  max_workers: 1
+  name: GPUMiner
+  version: 1.0.0
+wallet:
+  consolidate_address: addr1q8xsj2q82rj3t2e9ky9tv7yg4g5hu78fekwzvd82xyhawpnwwxtnrl8ddv434lklnkwx9zvlyrsv5gmusxy6nqdxnarqqhh7pd
+  file: wallets.db
