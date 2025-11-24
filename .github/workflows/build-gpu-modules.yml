@@ -30,12 +30,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
     
@@ -76,7 +76,7 @@ jobs:
         python -c "import os; files = os.listdir('gpu_core/bin/${{ matrix.platform }}'); print(f'Built files: {files}'); assert len(files) >= 2, 'Expected at least 2 binary files'"
     
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: gpu-modules-${{ matrix.platform }}
         path: gpu_core/bin/${{ matrix.platform }}/*
