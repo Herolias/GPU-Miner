@@ -26,10 +26,6 @@ if errorlevel 1 (
     echo Nuitka is already installed.
 )
 
-REM Install project dependencies
-echo.
-echo Installing project dependencies...
-python -m pip install -r requirements.txt
 
 REM Create output directory
 echo.

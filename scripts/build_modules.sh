@@ -33,9 +33,9 @@ fi
 # Install Nuitka if not present
 echo ""
 echo "Checking for Nuitka..."
-if ! python -m pip show nuitka &>/dev/null; then
+if ! python3 -m pip show nuitka &>/dev/null; then
     echo "Nuitka not found. Installing..."
-    python -m pip install nuitka ordered-set zstandard
+    python3 -m pip install nuitka ordered-set zstandard
 else
     echo "Nuitka is already installed."
 fi
@@ -43,7 +43,7 @@ fi
 # Install project dependencies
 echo ""
 echo "Installing project dependencies..."
-python -m pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 
 # Create output directory
 echo ""
@@ -61,13 +61,13 @@ echo ""
 echo "===================================="
 echo "Building engine.py..."
 echo "===================================="
-python -m nuitka --module --output-dir=build_output gpu_core/engine.py
+python3 -m nuitka --module --output-dir=build_output gpu_core/engine.py
 
 echo ""
 echo "===================================="
 echo "Building kernels.py..."
 echo "===================================="
-python -m nuitka --module --output-dir=build_output gpu_core/kernels.py
+python3 -m nuitka --module --output-dir=build_output gpu_core/kernels.py
 
 # Move binaries to destination
 echo ""
@@ -94,7 +94,7 @@ echo ""
 echo "===================================="
 echo "Testing GPU module import..."
 echo "===================================="
-python -c "from gpu_core import GPU_AVAILABLE, GPUEngine; print(f'GPU Available: {GPU_AVAILABLE}'); print(f'GPUEngine: {GPUEngine}')" || {
+python3 -c "from gpu_core import GPU_AVAILABLE, GPUEngine; print(f'GPU Available: {GPU_AVAILABLE}'); print(f'GPUEngine: {GPUEngine}')" || {
     echo "ERROR: Failed to import GPU modules!"
     exit 1
 }
