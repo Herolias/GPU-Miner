@@ -17,24 +17,44 @@ class MinerManager:
         self.gpu_queue = mp.Queue()
         self.gpu_response_queue = mp.Queue()
         self.gpu_process = None
+        self.gpu_ready_event = None
+        self.gpu_ready_flag = None
         self.workers = []
 
     def start(self):
         self.running = True
         logging.info("Starting Miner Manager...")
         
+        # Start Dashboard Thread early so loading screen can show
+        self.dashboard_thread = threading.Thread(target=self._update_dashboard_loop)
+        self.dashboard_thread.start()
+
+        gpu_enabled = config.get("gpu.enabled")
+        supports_loading = False
+
         # Start GPU Engine
-        if config.get("gpu.enabled"):
+        if gpu_enabled:
+            self.gpu_ready_event = mp.Event()
+            self.gpu_ready_flag = mp.Value('i', 0)
             self.gpu_process = GPUEngine(self.gpu_queue, self.gpu_response_queue)
+
+            if hasattr(self.gpu_process, "set_ready_notifier"):
+                self.gpu_process.set_ready_notifier(self.gpu_ready_event, self.gpu_ready_flag)
+                supports_loading = True
+                dashboard.set_loading("Building CUDA kernels...")
+
             self.gpu_process.start()
             logging.info("GPU Engine process started")
 
+            if supports_loading:
+                if self._wait_for_gpu_ready():
+                    logging.info("GPU kernels built successfully")
+                else:
+                    logging.error("GPU initialization failed or timed out")
+                dashboard.set_loading(None)
+
         self.manager_thread = threading.Thread(target=self._manage_mining)
         self.manager_thread.start()
-        
-        # Start Dashboard Thread
-        self.dashboard_thread = threading.Thread(target=self._update_dashboard_loop)
-        self.dashboard_thread.start()
 
     def stop(self):
         self.running = False
@@ -88,6 +108,21 @@ class MinerManager:
             except Exception as e:
                 logging.error(f"Dashboard error: {e}")
                 time.sleep(5)
+
+    def _wait_for_gpu_ready(self, timeout=180):
+        if not self.gpu_ready_event:
+            return True
+
+        if not self.gpu_ready_event.wait(timeout):
+            logging.error("Timeout while waiting for GPU kernels to build")
+            return False
+
+        status = self.gpu_ready_flag.value if self.gpu_ready_flag is not None else 1
+        if status == 1:
+            return True
+
+        logging.error("GPU engine reported a failure during initialization")
+        return False
 
     def _manage_mining(self):
         # Ensure wallets exist

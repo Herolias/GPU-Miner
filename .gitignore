@@ -53,8 +53,6 @@ challenges.json
 developer_addresses.json
 
 # GPU Source Code (proprietary - keep compiled binaries only)
-gpu_core/engine.py
-gpu_core/kernels.py
 gpu_core/.cuda_cache/
 *.build/
 *.pyi

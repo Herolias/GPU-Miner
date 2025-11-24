@@ -17,7 +17,7 @@ class Dashboard:
     def __init__(self):
         self.start_time = datetime.now()
         self.lock = threading.Lock()
-        
+
         # Stats
         self.total_hashrate = 0.0
         self.session_solutions = 0
@@ -26,7 +26,10 @@ class Dashboard:
         self.active_wallets = 0
         self.current_challenge = "Waiting..."
         self.difficulty = "N/A"
-        
+        self.loading_message = None
+        self._spinner_frames = ['|', '/', '-', '\\']
+        self._spinner_index = 0
+
         # Console setup
         os.system('color') # Enable ANSI on Windows
 
@@ -40,6 +43,12 @@ class Dashboard:
             self.current_challenge = challenge
             self.difficulty = difficulty
 
+    def set_loading(self, message):
+        """Set or clear a loading message shown instead of the dashboard."""
+        with self.lock:
+            self.loading_message = message
+            self._spinner_index = 0
+
     def _get_uptime(self):
         delta = datetime.now() - self.start_time
         return str(delta).split('.')[0] # Remove microseconds
@@ -47,10 +56,30 @@ class Dashboard:
     def _clear_screen(self):
         os.system('cls' if os.name == 'nt' else 'clear')
 
+    def _render_loading(self):
+        spinner = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
+        self._spinner_index += 1
+
+        print(f"{CYAN}{BOLD}")
+        print(r"""
+   ______  ____  __  __      __  __  _                     
+  / ____/ / __ \/ / / /     /  |/  /(_)___  ___  _____     
+ / / __  / /_/ / / / /     / /|_/ // / __ \/ _ \/ ___/     
+/ /_/ / / ____/ /_/ /     / /  / // / / / /  __/ /         
+\____/ /_/    \____/     /_/  /_//_/_/ /_/\___/_/          
+""")
+        print(f"{RESET}")
+        print(f"{BOLD}{spinner} {self.loading_message or 'Loading...'}{RESET}")
+        print("\nPlease wait while the CUDA kernels are being built...")
+
     def render(self):
         with self.lock:
             self._clear_screen()
-            
+
+            if self.loading_message:
+                self._render_loading()
+                return
+
             # Header
             print(f"{CYAN}{BOLD}")
             print(r"""
