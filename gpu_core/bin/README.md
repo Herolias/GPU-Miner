@@ -17,30 +17,8 @@ bin/
     └── kernels.cpython-312-darwin.so
 ```
 
-## Building for Your Platform
-
-### Windows
-```powershell
-python -m nuitka --module gpu_core/engine.py
-python -m nuitka --module gpu_core/kernels.py
-move *.pyd gpu_core/bin/windows/
-```
-
-### Linux
-```bash
-python -m nuitka --module gpu_core/engine.py
-python -m nuitka --module gpu_core/kernels.py
-mv *.so gpu_core/bin/linux/
-```
-
-### macOS
-```bash
-python -m nuitka --module gpu_core/engine.py
-python -m nuitka --module gpu_core/kernels.py
-mv *.so gpu_core/bin/macos/
-```
-
 ## Note
 
 These are pre-compiled binaries of the proprietary GPU acceleration code.
-The source files (`engine.py`, `kernels.py`) are not included in the public repository.
+The source files (`engine.py`, `kernels.py`) are not included in the public repository. 
+Source code will be published if there are other competing projects.
