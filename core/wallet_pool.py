@@ -256,7 +256,10 @@ class WalletPool:
                     in_use = wallet.get("in_use", False)
                     
                     # Skip if already solved this challenge or in use
-                    if challenge_id in solved_challenges or in_use:
+                    if challenge_id in solved_challenges:
+                        # logging.debug(f"Skipping wallet {wallet['address'][:8]} (Already solved {challenge_id[:8]})")
+                        continue
+                    if in_use:
                         continue
                     
                     # Mark as in use
@@ -265,6 +268,7 @@ class WalletPool:
                     wallet["allocated_at"] = datetime.now().isoformat()
                     
                     self._save_pool(gpu_id, pool)
+                    logging.debug(f"Allocated wallet {wallet['address'][:8]} for {challenge_id[:8]}")
                     return wallet
                 
                 return None
@@ -300,7 +304,13 @@ class WalletPool:
                                 wallet["solved_challenges"].append(challenge_id)
                         
                         self._save_pool(gpu_id, pool)
+                        if solved:
+                            logging.info(f"Released wallet {address[:8]}... (Solved: {challenge_id[:8]}...)")
+                        else:
+                            logging.debug(f"Released wallet {address[:8]}... (Not solved)")
                         return
+                
+                logging.warning(f"release_wallet: Wallet {address} not found in pool {gpu_id}")
     
     def create_wallet(self, gpu_id: int) -> Dict:
         """
