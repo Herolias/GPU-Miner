@@ -159,7 +159,8 @@ class MinerManager:
                 logging.error(f"Dashboard error: {e}")
                 time.sleep(5)
 
-    def _wait_for_gpu_ready(self, timeout=180):
+    def _wait_for_gpu_ready(self, timeout=600):
+        """Wait for GPU kernels to compile. Increased timeout for multi-GPU systems."""
         if not self.gpu_ready_events:
             return True
 
@@ -168,8 +169,14 @@ class MinerManager:
             remaining = timeout - (time.time() - start_time)
             if remaining <= 0:
                 logging.error("Timeout while waiting for GPU kernels to build")
+                logging.error("This can happen on slower systems or with many GPUs compiling in parallel")
                 return False
-                
+            
+            # Log progress every 30 seconds
+            elapsed = time.time() - start_time
+            if elapsed > 30 and i == 0:
+                logging.info(f"Still compiling kernels... ({int(elapsed)}s elapsed, {int(remaining)}s remaining)")
+            
             if not event.wait(remaining):
                 logging.error(f"Timeout while waiting for GPU {i} to initialize")
                 return False
@@ -179,6 +186,8 @@ class MinerManager:
             if status != 1:
                 logging.error(f"GPU {i} reported a failure during initialization")
                 return False
+            
+            logging.info(f"GPU {i} initialized successfully")
 
         return True
 
