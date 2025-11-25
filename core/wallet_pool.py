@@ -85,7 +85,7 @@ class WalletPool:
         """
         consolidate_address = config.get('wallet.consolidate_address')
         if not consolidate_address:
-            return True  # No consolidation configured
+            return False  # No consolidation configured, so it's NOT consolidated
         
         # Skip if already consolidated
         if wallet_data.get('is_consolidated', False):
