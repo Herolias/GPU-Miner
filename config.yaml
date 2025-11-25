@@ -12,7 +12,7 @@ miner:
   api_url: https://mine.defensio.io/api
   max_workers: 1
   name: GPU-Miner
-  version: 0.0.5
+  version: 0.1.0-beta
 wallet:
   consolidate_address: null
   file: wallets.db

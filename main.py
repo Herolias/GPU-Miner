@@ -22,6 +22,20 @@ def main():
     # Initialize logging
     setup_logging()
     
+    # Parse CLI arguments
+    import argparse
+    parser = argparse.ArgumentParser(description="Midnight/Defensio Miner")
+    parser.add_argument("--cpu", action="store_true", help="Enable CPU mining")
+    parser.add_argument("--workers", type=int, default=1, help="Number of CPU workers (default: 1)")
+    args = parser.parse_args()
+    
+    # Update config with CLI args
+    if args.cpu:
+        config.data['cpu'] = config.data.get('cpu', {})
+        config.data['cpu']['enabled'] = True
+        config.data['cpu']['workers'] = args.workers
+        logging.info(f"CPU Mining Enabled: {args.workers} workers")
+
     logging.info("=== GPU Miner Starting ===")
     logging.info(f"API Base: {config.get('api_base')}")
     

@@ -268,7 +268,9 @@ class APIClient:
         """
         endpoint = f"/solution/{wallet_address}/{challenge_id}/{nonce}"
         try:
-            self._request("POST", endpoint, max_retries=1)  # Single attempt, queue handles retries
+            response = self._request("POST", endpoint, max_retries=1)  # Single attempt, queue handles retries
+            # Log response for debugging
+            logging.info(f"Submission Response: {response}")
             return True, False
         except requests.exceptions.HTTPError as e:
             # 400 Bad Request and 409 Conflict are fatal (invalid solution)
