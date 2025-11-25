@@ -75,7 +75,101 @@ class WalletPool:
                 json.dump(pool_data, f, indent=2)
         except Exception as e:
             logging.error(f"Error saving wallet pool for GPU {gpu_id}: {e}")
-    
+        except Exception as e:
+            logging.error(f"Error saving wallet pool for GPU {gpu_id}: {e}")
+            
+    def _consolidate_wallet(self, wallet_data: Dict) -> bool:
+        """
+        Consolidate a wallet's earnings to the configured consolidate_address.
+        Returns True if successful or already consolidated, False otherwise.
+        """
+        consolidate_address = config.get('wallet.consolidate_address')
+        if not consolidate_address:
+            return True  # No consolidation configured
+        
+        # Skip if already consolidated
+        if wallet_data.get('is_consolidated', False):
+            return True
+            
+        destination_address = consolidate_address
+        original_address = wallet_data['address']
+        
+        try:
+            # Create signature for donation message
+            message = f"Assign accumulated Scavenger rights to: {destination_address}"
+            
+            signing_key_bytes = bytes.fromhex(wallet_data['signing_key'])
+            signing_key = PaymentSigningKey.from_primitive(signing_key_bytes)
+            address = Address.from_primitive(wallet_data['address'])
+            address_bytes = bytes(address.to_primitive())
+            
+            protected = {1: -8, "address": address_bytes}
+            protected_encoded = cbor2.dumps(protected)
+            unprotected = {"hashed": False}
+            payload = message.encode('utf-8')
+            
+            sig_structure = ["Signature1", protected_encoded, b'', payload]
+            to_sign = cbor2.dumps(sig_structure)
+            signature_bytes = signing_key.sign(to_sign)
+            
+            cose_sign1 = [protected_encoded, unprotected, payload, signature_bytes]
+            signature_hex = cbor2.dumps(cose_sign1).hex()
+            
+            # Make API call to consolidate
+            success = api.consolidate_wallet(destination_address, original_address, signature_hex)
+            if success:
+                logging.info(f"✓ Consolidated wallet {original_address[:10]}... to {destination_address[:10]}...")
+                wallet_data['is_consolidated'] = True
+                return True
+            return False
+        except Exception as e:
+            logging.warning(f"Failed to consolidate wallet {original_address[:10]}...: {e}")
+            return False
+
+    def consolidate_pool(self, gpu_id: int):
+        """
+        Consolidate all unconsolidated wallets in the GPU's pool.
+        """
+        consolidate_address = config.get('wallet.consolidate_address')
+        if not consolidate_address:
+            return
+
+        # 1. Load wallets (holding lock briefly)
+        thread_lock = self._get_thread_lock(gpu_id)
+        file_lock = self._get_file_lock(gpu_id)
+        
+        wallets_to_consolidate = []
+        with thread_lock:
+            with file_lock:
+                pool = self._load_pool(gpu_id)
+                for wallet in pool.get("wallets", []):
+                    if not wallet.get('is_consolidated', False):
+                        wallets_to_consolidate.append(wallet)
+        
+        if not wallets_to_consolidate:
+            return
+
+        # 2. Consolidate one by one (NO LOCK HELD during API call)
+        consolidated_count = 0
+        for wallet in wallets_to_consolidate:
+            if self._consolidate_wallet(wallet):
+                # 3. Update status in DB (re-acquire lock briefly)
+                with thread_lock:
+                    with file_lock:
+                        pool = self._load_pool(gpu_id)
+                        # Find and update the specific wallet
+                        for w in pool.get("wallets", []):
+                            if w["address"] == wallet["address"]:
+                                w["is_consolidated"] = True
+                                break
+                        self._save_pool(gpu_id, pool)
+                
+                consolidated_count += 1
+                time.sleep(1.0)  # Rate limit protection
+        
+        if consolidated_count > 0:
+            logging.info(f"Consolidated {consolidated_count} wallets for GPU {gpu_id}")
+
     def allocate_wallet(self, gpu_id: int, challenge_id: str) -> Optional[Dict]:
         """
         Allocate an available wallet for a GPU to mine a specific challenge.
@@ -207,9 +301,24 @@ class WalletPool:
                     pool["wallets"] = []
                 
                 pool["wallets"].append(wallet_data)
+                pool["wallets"].append(wallet_data)
                 self._save_pool(gpu_id, pool)
         
         logging.info(f"Created new wallet for GPU {gpu_id}: {wallet_data['address'][:20]}...")
+        
+        # Consolidate immediately (outside lock to avoid holding it during API call)
+        # Note: We need to update the pool again if consolidation succeeds
+        if self._consolidate_wallet(wallet_data):
+            with thread_lock:
+                with file_lock:
+                    pool = self._load_pool(gpu_id)
+                    # Find and update the wallet
+                    for w in pool.get("wallets", []):
+                        if w["address"] == wallet_data["address"]:
+                            w["is_consolidated"] = True
+                            break
+                    self._save_pool(gpu_id, pool)
+                    
         return wallet_data
     
     def ensure_wallets(self, gpu_id: int, count: int = 10):
@@ -235,6 +344,7 @@ class WalletPool:
         
         for i in range(needed):
             self.create_wallet(gpu_id)
+            time.sleep(1.0)  # Rate limit protection
     
     def migrate_from_db(self, gpu_id: int, db_wallets: List[Dict]):
         """

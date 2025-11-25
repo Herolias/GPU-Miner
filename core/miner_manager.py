@@ -206,8 +206,14 @@ class MinerManager:
             logging.info(f"Ensuring {wallets_per_gpu} wallets per GPU...")
             for gpu_id in range(num_gpus):
                 wallet_pool.ensure_wallets(gpu_id, wallets_per_gpu)
+                # Consolidate any existing wallets that might have been missed
+                wallet_pool.consolidate_pool(gpu_id)
+                
                 stats = wallet_pool.get_pool_stats(gpu_id)
                 logging.info(f"GPU {gpu_id}: {stats['total']} wallets ({stats['available']} available)")
+            
+            # Brief pause to let API rate limits reset after potential consolidations
+            time.sleep(2)
             
             # Track active requests: req_id -> (gpu_id, wallet_addr, challenge_id, is_dev_solution)
             active_requests = {}

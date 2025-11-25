@@ -204,7 +204,10 @@ class APIClient:
         """Get the current mining challenge."""
         try:
             data = self._request("GET", "/challenge", max_retries=3)
-            return data.get('challenge')
+            challenge = data.get('challenge')
+            if not challenge:
+                logging.warning(f"API returned no challenge data: {data}")
+            return challenge
         except Exception as e:
             logging.error(f"Failed to get current challenge: {e}")
             return None
