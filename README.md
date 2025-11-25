@@ -15,7 +15,7 @@ Update via git pull or use `scripts/update.bat` or `scripts/update.sh`.
 
 ### Prerequisites
 
-- **Python 3.12+**
+- **Python 3.12** Important: The GPU binaries are compiled for Python 3.12 only (right now).
 - **CUDA-capable GPU** (NVIDIA)
 - **CUDA Toolkit 11.8+** ([Download](https://developer.nvidia.com/cuda-downloads))
 
