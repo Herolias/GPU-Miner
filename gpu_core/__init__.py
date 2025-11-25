@@ -56,15 +56,37 @@ if not GPU_AVAILABLE:
         GPU_AVAILABLE = GPUEngine is not None and CUDA_SOURCE is not None
         if _binary_error and GPU_AVAILABLE:
             print(
-                f"Warning: Failed to load GPU binaries ({_platform_dir}): {_binary_error}. "
-                "Falling back to PyCUDA implementation."
+                f"Warning: Failed to load precompiled GPU binaries ({_platform_dir}): {_binary_error}. "
+                "Attempting Python fallback..."
             )
     except ImportError as exc:
         GPUEngine = None
         CUDA_SOURCE = None
         GPU_AVAILABLE = False
         reason = _binary_error or exc
-        print(f"Warning: Could not load GPU module for {_platform_dir}: {reason}")
-        print("GPU acceleration not available. Falling back to CPU mode.")
+        print("")
+        print("=" * 60)
+        print("ERROR: GPU Module Failed to Load")
+        print("=" * 60)
+        print(f"Platform: {_platform_dir}")
+        print(f"Reason: {reason}")
+        print("")
+        print("Troubleshooting:")
+        print("  1. Ensure you're running from the GPUMiner directory:")
+        print("     cd GPUMiner")
+        print("     python main.py")
+        print("")
+        print("  2. If you downloaded as ZIP, rename folder to 'GPUMiner':")
+        print("     GPU-Miner-main → GPUMiner")
+        print("")
+        print("  3. Re-download from GitHub:")
+        print("     git clone https://github.com/Herolias/GPU-Miner.git")
+        print("")
+        print("  4. Verify binary files exist:")
+        print(f"     {_bin_dir}/")
+        print("     Should contain .pyd (Windows) or .so (Linux) files")
+        print("")
+        print("The miner cannot run without GPU binaries.")
+        print("=" * 60)
 
 __all__ = ["GPUEngine", "CUDA_SOURCE", "GPU_AVAILABLE"]

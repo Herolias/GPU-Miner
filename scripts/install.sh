@@ -123,14 +123,20 @@ if ! command -v make &> /dev/null; then
     BUILD_TOOLS_OK=0
 fi
 
+# Check for python3-dev headers
+if ! dpkg -l | grep -q "python3-dev\|python3\.12-dev" 2>/dev/null && ! rpm -qa | grep -q "python3-devel" 2>/dev/null; then
+    echo -e "${YELLOW}[WARNING] Python development headers not found${NC}"
+    BUILD_TOOLS_OK=0
+fi
+
 if [ $BUILD_TOOLS_OK -eq 0 ]; then
     echo ""
-    echo "Build tools are required to compile PyCUDA."
+    echo "Build tools and Python development headers are required to compile PyCUDA."
     echo ""
-    echo "Install build tools using your package manager:"
-    echo "  Ubuntu/Debian: sudo apt install build-essential"
-    echo "  Fedora/RHEL:   sudo dnf groupinstall 'Development Tools'"
-    echo "  Arch:          sudo pacman -S base-devel"
+    echo "Install required packages using your package manager:"
+    echo "  Ubuntu/Debian: sudo apt-get install python3-dev python3.12-dev build-essential"
+    echo "  Fedora/RHEL:   sudo dnf groupinstall 'Development Tools' && sudo dnf install python3-devel"
+    echo "  Arch:          sudo pacman -S base-devel python"
     echo ""
     read -p "Continue without build tools (PyCUDA installation will fail)? [y/N]: " -n 1 -r
     echo ""
