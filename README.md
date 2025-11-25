@@ -10,6 +10,12 @@ Let me know if I should add support for more projects.
 ## Warning
 Very experimental right now, expect bugs and frequent updates.
 Update via git pull or use `scripts/update.bat` or `scripts/update.sh`.
+To update to version 0.0.5 use 
+```bash 
+git stash
+git pull
+git stash pop
+```
 
 ## Quick Start
 
@@ -41,16 +47,29 @@ chmod +x scripts/install.sh
 Edit `config.yaml` to customize settings:
 
 ```yaml
+gpu:
+  batch_size: 1000000
+  blocks_per_sm: 0
+  warmup_batch: 250000
+  enabled: true
+  # Optional: Specify CUDA toolkit path if auto-detection fails
+  # Examples:
+  #   Windows: "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.8"
+  #   Linux: "/usr/local/cuda-11.8"
+  cuda_toolkit_path: null
 miner:
   api_url: https://mine.defensio.io/api
   max_workers: 1
-
+  name: GPU-Miner
+  version: 0.0.5
 wallet:
-  consolidate_address: your_cardano_address_here
+  consolidate_address: enter_your_consolidation_address_here
+  file: wallets.db
+  # Use JSON-based per-GPU wallet pools (recommended for multi-GPU setups)
+  use_json_pools: true
+  # Number of wallets to pre-generate per GPU
+  wallets_per_gpu: 10
 
-gpu:
-  enabled: true
-  batch_size: 1000000
 ```
 
 ### Running
