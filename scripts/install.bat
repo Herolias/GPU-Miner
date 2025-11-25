@@ -52,13 +52,24 @@ REM ==========================================
 echo [3/5] Checking CUDA Toolkit...
 set CUDA_FOUND=0
 set CUDA_PATH_FOUND=
+set NVCC_IN_PATH=0
+
+REM Check if nvcc.exe is in PATH first
+where nvcc.exe >nul 2>&1
+if %errorlevel% equ 0 (
+    set CUDA_FOUND=1
+    set NVCC_IN_PATH=1
+    echo [OK] CUDA Toolkit found ^(nvcc.exe in PATH^)
+    goto cuda_check_done
+)
 
 REM Check common CUDA installation paths
 for %%v in (13.0 12.6 12.5 12.4 12.3 12.2 12.1 12.0 11.8 11.7) do (
     if exist "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v%%v\bin\nvcc.exe" (
         set CUDA_FOUND=1
         set CUDA_PATH_FOUND=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v%%v
-        echo [OK] CUDA Toolkit v%%v found
+        echo [WARNING] CUDA Toolkit v%%v found at !CUDA_PATH_FOUND!
+        echo [WARNING] but nvcc.exe is not in PATH
         goto cuda_check_done
     )
 )
@@ -78,6 +89,27 @@ if %CUDA_FOUND% equ 0 (
     echo.
     choice /C YN /M "Continue without CUDA (installation will likely fail)"
     if !errorlevel! equ 2 exit /b 1
+) else if %NVCC_IN_PATH% equ 0 (
+    REM CUDA found but nvcc not in PATH
+    echo.
+    echo IMPORTANT: Add CUDA to your PATH environment variable
+    echo.
+    echo Option 1 - Temporary ^(for this session only^):
+    echo   Run: set PATH=!CUDA_PATH_FOUND!\bin;%%PATH%%
+    echo.
+    echo Option 2 - Permanent:
+    echo   1. Press Win + X, select "System"
+    echo   2. Click "Advanced system settings"
+    echo   3. Click "Environment Variables"
+    echo   4. Under "System variables", select "Path" and click "Edit"
+    echo   5. Click "New" and add: !CUDA_PATH_FOUND!\bin
+    echo   6. Click OK, then restart this command prompt
+    echo.
+    echo Temporarily adding CUDA to PATH for this installation session...
+    set PATH=!CUDA_PATH_FOUND!\bin;%PATH%
+    echo.
+    choice /C YN /M "Continue with installation"
+    if !errorlevel! equ 2 exit /b 1
 )
 echo.
 
@@ -96,7 +128,7 @@ if %errorlevel% equ 0 (
 )
 
 REM Check for Build Tools standalone installations (more common)
-for %%v in (2026 2025 2024 2023 2022 2019) do (
+for %%v in (2026 2025 2024 2023 2022 2021 2020 2019 2018 2017) do (
     if exist "C:\Program Files (x86)\Microsoft Visual Studio\%%v\BuildTools\VC\Tools\MSVC" (
         set MSVC_FOUND=1
         echo [OK] Build Tools for Visual Studio %%v found
@@ -105,7 +137,7 @@ for %%v in (2026 2025 2024 2023 2022 2019) do (
 )
 
 REM Check common Visual Studio Community/Professional/Enterprise paths
-for %%v in (2026 2025 2024 2023 2022 2019 2017) do (
+for %%v in (2026 2025 2024 2023 2022 2021 2020 2019 2018 2017) do (
     for %%e in (Community Professional Enterprise) do (
         if exist "C:\Program Files\Microsoft Visual Studio\%%v\%%e\VC\Tools\MSVC" (
             set MSVC_FOUND=1

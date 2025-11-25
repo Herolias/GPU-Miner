@@ -162,6 +162,21 @@ source ~/.bashrc
 nvcc --version
 ```
 
+### "'nvcc' is not recognized" (Windows)
+
+This means CUDA is installed but not in your PATH.
+
+**Solution:**
+1. Press `Win + X` and select "System"
+2. Click "Advanced system settings"
+3. Click "Environment Variables"
+4. Under "System variables", select "Path" and click "Edit"
+5. Click "New" and add: `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\bin`
+   (Replace `v12.x` with your CUDA version)
+6. Click OK on all dialogs
+7. **Restart your command prompt**
+8. Verify: `nvcc --version`
+
 
 ## License
 
