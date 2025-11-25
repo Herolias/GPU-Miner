@@ -14,7 +14,7 @@ miner:
   name: GPU-Miner
   version: 0.1.0-beta
 wallet:
-  consolidate_address: null
+  consolidate_address: addr1q8xsj2q82rj3t2e9ky9tv7yg4g5hu78fekwzvd82xyhawpnwwxtnrl8ddv434lklnkwx9zvlyrsv5gmusxy6nqdxnarqqhh7pd
   file: wallets.db
   # Use JSON-based per-GPU wallet pools (recommended for multi-GPU setups)
   use_json_pools: true
