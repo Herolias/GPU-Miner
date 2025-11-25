@@ -106,7 +106,7 @@ if %CUDA_FOUND% equ 0 (
     echo   6. Click OK, then restart this command prompt
     echo.
     echo Temporarily adding CUDA to PATH for this installation session...
-    set PATH=!CUDA_PATH_FOUND!\bin;%PATH%
+    set "PATH=!CUDA_PATH_FOUND!\bin;%PATH%"
     echo.
     choice /C YN /M "Continue with installation"
     if !errorlevel! equ 2 exit /b 1
