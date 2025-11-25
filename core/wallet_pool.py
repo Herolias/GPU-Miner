@@ -126,49 +126,117 @@ class WalletPool:
             logging.warning(f"Failed to consolidate wallet {original_address[:10]}...: {e}")
             return False
 
+    def start_consolidation_thread(self, gpu_id: int):
+        """
+        Start a background thread to consolidate wallets for this GPU.
+        This prevents blocking the main mining loop during startup.
+        """
+        t = threading.Thread(target=self.consolidate_pool, args=(gpu_id,), daemon=True)
+        t.start()
+        logging.info(f"Started background consolidation thread for GPU {gpu_id}")
+
     def consolidate_pool(self, gpu_id: int):
         """
         Consolidate all unconsolidated wallets in the GPU's pool.
         """
-        consolidate_address = config.get('wallet.consolidate_address')
-        if not consolidate_address:
-            return
+        try:
+            consolidate_address = config.get('wallet.consolidate_address')
+            if not consolidate_address:
+                return
 
-        # 1. Load wallets (holding lock briefly)
-        thread_lock = self._get_thread_lock(gpu_id)
-        file_lock = self._get_file_lock(gpu_id)
-        
-        wallets_to_consolidate = []
-        with thread_lock:
-            with file_lock:
-                pool = self._load_pool(gpu_id)
-                for wallet in pool.get("wallets", []):
-                    if not wallet.get('is_consolidated', False):
-                        wallets_to_consolidate.append(wallet)
-        
-        if not wallets_to_consolidate:
-            return
-
-        # 2. Consolidate one by one (NO LOCK HELD during API call)
-        consolidated_count = 0
-        for wallet in wallets_to_consolidate:
-            if self._consolidate_wallet(wallet):
-                # 3. Update status in DB (re-acquire lock briefly)
+            # 1. Load wallets (holding lock briefly)
+            thread_lock = self._get_thread_lock(gpu_id)
+            file_lock = self._get_file_lock(gpu_id)
+            
+            wallets_to_consolidate = []
+            try:
                 with thread_lock:
                     with file_lock:
                         pool = self._load_pool(gpu_id)
-                        # Find and update the specific wallet
-                        for w in pool.get("wallets", []):
-                            if w["address"] == wallet["address"]:
-                                w["is_consolidated"] = True
-                                break
-                        self._save_pool(gpu_id, pool)
+                        
+                        # --- DEDUPLICATION START ---
+                        # Fix for previous bug where wallets were duplicated
+                        unique_wallets = {}
+                        has_duplicates = False
+                        
+                        if "wallets" in pool:
+                            for w in pool["wallets"]:
+                                addr = w["address"]
+                                if addr not in unique_wallets:
+                                    unique_wallets[addr] = w
+                                else:
+                                    has_duplicates = True
+                                    # Merge state
+                                    existing = unique_wallets[addr]
+                                    existing['is_consolidated'] = existing.get('is_consolidated', False) or w.get('is_consolidated', False)
+                                    existing['in_use'] = existing.get('in_use', False) or w.get('in_use', False)
+                                    
+                                    # Merge solved challenges
+                                    s1 = set(existing.get('solved_challenges', []))
+                                    s2 = set(w.get('solved_challenges', []))
+                                    existing['solved_challenges'] = list(s1.union(s2))
+                                    
+                                    # Keep current challenge if set
+                                    if not existing.get('current_challenge') and w.get('current_challenge'):
+                                        existing['current_challenge'] = w['current_challenge']
+                                        existing['allocated_at'] = w.get('allocated_at')
+
+                            if has_duplicates:
+                                logging.info(f"Removing duplicate wallets for GPU {gpu_id}...")
+                                pool["wallets"] = list(unique_wallets.values())
+                                self._save_pool(gpu_id, pool)
+                        # --- DEDUPLICATION END ---
+
+                        for wallet in pool.get("wallets", []):
+                            if not wallet.get('is_consolidated', False):
+                                wallets_to_consolidate.append(wallet)
+            except Exception as e:
+                logging.error(f"Error loading pool for consolidation (GPU {gpu_id}): {e}")
+                return
+            
+            if not wallets_to_consolidate:
+                return
+
+            logging.info(f"Background: Consolidating {len(wallets_to_consolidate)} wallets for GPU {gpu_id}...")
+
+            # 2. Consolidate one by one (NO LOCK HELD during API call)
+            consolidated_count = 0
+            for wallet in wallets_to_consolidate:
+                try:
+                    if self._consolidate_wallet(wallet):
+                        # 3. Update status in DB (re-acquire lock briefly)
+                        with thread_lock:
+                            with file_lock:
+                                # Reload pool to get latest state
+                                pool = self._load_pool(gpu_id)
+                                # Find and update the specific wallet
+                                updated = False
+                                if "wallets" in pool:
+                                    for w in pool["wallets"]:
+                                        if w["address"] == wallet["address"]:
+                                            w["is_consolidated"] = True
+                                            updated = True
+                                            # NO BREAK here, in case duplicates still exist (though we tried to remove them)
+                                
+                                if updated:
+                                    self._save_pool(gpu_id, pool)
+                                    logging.debug(f"Updated consolidation status for {wallet['address'][:8]}")
+                                else:
+                                    logging.warning(f"Could not find wallet {wallet['address'][:8]} to update status")
+                        
+                        consolidated_count += 1
+                except Exception as e:
+                    logging.error(f"Error consolidating wallet {wallet.get('address', 'unknown')}: {e}")
                 
-                consolidated_count += 1
                 time.sleep(1.0)  # Rate limit protection
-        
-        if consolidated_count > 0:
-            logging.info(f"Consolidated {consolidated_count} wallets for GPU {gpu_id}")
+            
+            if consolidated_count > 0:
+                logging.info(f"Background: Finished consolidating {consolidated_count} wallets for GPU {gpu_id}")
+                
+        except Exception as e:
+            logging.error(f"Fatal error in consolidation thread for GPU {gpu_id}: {e}")
+            import traceback
+            traceback.print_exc()
 
     def allocate_wallet(self, gpu_id: int, challenge_id: str) -> Optional[Dict]:
         """
@@ -300,7 +368,6 @@ class WalletPool:
                 if "wallets" not in pool:
                     pool["wallets"] = []
                 
-                pool["wallets"].append(wallet_data)
                 pool["wallets"].append(wallet_data)
                 self._save_pool(gpu_id, pool)
         

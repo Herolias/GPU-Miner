@@ -22,6 +22,7 @@ class MinerManager:
         self.gpu_ready_events = []
         self.gpu_ready_flags = []
         self.workers = []
+        self.retry_queue = [] # List of (wallet_addr, challenge_id, nonce_hex, difficulty, is_dev, retry_count)
 
     def start(self):
         self.running = True
@@ -206,8 +207,9 @@ class MinerManager:
             logging.info(f"Ensuring {wallets_per_gpu} wallets per GPU...")
             for gpu_id in range(num_gpus):
                 wallet_pool.ensure_wallets(gpu_id, wallets_per_gpu)
-                # Consolidate any existing wallets that might have been missed
-                wallet_pool.consolidate_pool(gpu_id)
+                wallet_pool.ensure_wallets(gpu_id, wallets_per_gpu)
+                # Consolidate any existing wallets that might have been missed (ASYNC)
+                wallet_pool.start_consolidation_thread(gpu_id)
                 
                 stats = wallet_pool.get_pool_stats(gpu_id)
                 logging.info(f"GPU {gpu_id}: {stats['total']} wallets ({stats['available']} available)")
@@ -263,6 +265,40 @@ class MinerManager:
                     logging.warning("Waiting for challenge...")
                     time.sleep(1)
                     continue
+
+                # 1.5 Process Retry Queue
+                # Try to resubmit failed solutions
+                if self.retry_queue:
+                    retry_item = self.retry_queue.pop(0)
+                    r_wallet, r_chal, r_nonce, r_diff, r_is_dev, r_count = retry_item
+                    
+                    # Only retry if challenge is still relevant or within reasonable time?
+                    # Actually, we should retry regardless, as long as server accepts it.
+                    
+                    logging.info(f"Retrying submission for {r_wallet[:8]}... (Attempt {r_count+1})")
+                    success, is_fatal = api.submit_solution(r_wallet, r_chal, r_nonce)
+                    
+                    if success:
+                        logging.info("Retry Successful!")
+                        db.update_solution_status(r_chal, r_nonce, 'accepted')
+                        if r_is_dev:
+                            self.dev_session_solutions += 1
+                        else:
+                            self.session_solutions += 1
+                            if r_wallet in self.wallet_session_solutions:
+                                self.wallet_session_solutions[r_wallet] += 1
+                    else:
+                        if is_fatal:
+                            logging.error(f"Retry failed fatally. Dropping.")
+                            db.update_solution_status(r_chal, r_nonce, 'rejected')
+                        else:
+                            # Re-queue if not max retries
+                            if r_count < 5:
+                                self.retry_queue.append((r_wallet, r_chal, r_nonce, r_diff, r_is_dev, r_count + 1))
+                                logging.warning(f"Retry failed (transient). Re-queueing.")
+                            else:
+                                logging.error(f"Max retries reached for solution. Dropping.")
+                                db.update_solution_status(r_chal, r_nonce, 'failed_max_retries')
 
                 # 2. Dispatch new jobs if we have capacity
                 # We want to keep 'num_gpus' requests in flight.
@@ -405,7 +441,11 @@ class MinerManager:
                     # Short timeout to allow loop to cycle and check for new challenges/shutdown
                     response = self.gpu_response_queue.get(timeout=0.1)
                 except:
-                    continue # No response yet, loop back
+                    # No response yet
+                    # Sleep briefly to avoid busy loop if no work is happening
+                    if len(active_requests) == num_gpus:
+                        time.sleep(0.01)
+                    continue # Loop back
                 
                 # Process Response
                 resp_id = response.get('request_id')
@@ -469,6 +509,17 @@ class MinerManager:
 
                                 if not is_dev_solution:
                                     logging.error("Solution Submission Failed")
+                                    
+                                    # Add to retry queue
+                                    self.retry_queue.append((
+                                        wallet_addr, 
+                                        challenge_id, 
+                                        nonce_hex, 
+                                        current_challenge['difficulty'], 
+                                        is_dev_solution, 
+                                        1
+                                    ))
+                                    logging.info("Added solution to retry queue")
                         else:
                             # No solution found, release wallet
                             if not is_dev_solution:
@@ -520,6 +571,17 @@ class MinerManager:
 
                                 if not is_dev_solution:
                                     logging.error("Solution Submission Failed")
+
+                                    # Add to retry queue
+                                    self.retry_queue.append((
+                                        wallet['address'], 
+                                        challenge['challenge_id'], 
+                                        nonce_hex, 
+                                        challenge['difficulty'], 
+                                        is_dev_solution, 
+                                        1
+                                    ))
+                                    logging.info("Added solution to retry queue")
                     
                     # Update hashrate estimate
                     if response.get('hashes') and response.get('duration'):
