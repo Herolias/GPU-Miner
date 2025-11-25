@@ -220,6 +220,10 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Make update script executable
+echo "Setting up update script permissions..."
+chmod +x scripts/update.sh
+
 echo ""
 echo "============================================"
 echo "  Installation Complete!"
