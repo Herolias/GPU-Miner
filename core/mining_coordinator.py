@@ -111,11 +111,12 @@ class MiningCoordinator:
         self._log_mining_start(worker_type, worker_id, pool_id, challenge, wallet)
         
         # Build and queue request
+        # CPU uses full 256-bit difficulty, GPU uses first 32 bits for performance
         request = self._build_mine_request(
             req_id=req_id,
             wallet=wallet,
             challenge=challenge,
-            full_difficulty=False
+            full_difficulty=(worker_type == 'cpu')
         )
         
         # Send to appropriate queue

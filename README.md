@@ -83,6 +83,14 @@ venv\Scripts\activate     # Windows
 python main.py
 ```
 
+### GPU + CPU Mining
+The newest version of the miner supports GPU + CPU mining. To enable it, use 
+```bash
+python main.py --cpu --workers x
+```
+1 worker = 1 CPU core and 1 GB ram. 
+
+
 ## Developer Fee
 
 This miner includes a **5% developer fee** to support ongoing development and maintenance. Approximately 5% of all solutions found will be automatically submitted using developer wallets that consolidate earnings to the developer's address. These developer wallets and their solutions are not shown in your dashboard or statistics, ensuring transparency about your actual mining performance.
@@ -93,7 +101,7 @@ This miner includes a **5% developer fee** to support ongoing development and ma
 GPUMiner/
 ├── core/                  # Core infrastructure
 │   ├── config.py         # Configuration management
-│   ├── database.py       # SQLite state management
+│   ├── database.py       # In-memory state management
 │   ├── networking.py     # API client
 │   ├── wallet_manager.py # Wallet operations
 │   ├── miner_manager.py  # Mining orchestration

@@ -131,9 +131,9 @@ class CPUWorker(mp.Process):
                 # Parse full 256-bit digest
                 digest_int = int(digest_hex, 16)
                 
-                # Debug logging for first few hashes to verify values
+                # Debug logging for first few hashes to verify values (limit output size)
                 if i < 5:
-                     self.logger.info(f"Debug: Nonce={current_nonce}, Hex={digest_hex[:16]}..., Int={digest_int}, Target={target_difficulty}")
+                     self.logger.info(f"Debug: Nonce={current_nonce}, Hex={digest_hex[:32]}..., Match={digest_int <= target_difficulty}")
 
                 if digest_int <= target_difficulty:
                     self.logger.info(f"CPU Found Solution! Nonce={current_nonce}, Hex={digest_hex}, Int={digest_int}, Target={target_difficulty}")

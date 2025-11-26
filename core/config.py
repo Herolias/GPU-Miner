@@ -22,7 +22,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "workers": 1,
     },
     "wallet": {
-        "file": "wallets.db",  # SQLite DB file
+        "file": "wallets.db",  # Deprecated: now using JSON wallet pools
         "consolidate_address": None,
     }
 }
