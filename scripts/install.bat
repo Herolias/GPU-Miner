@@ -128,7 +128,7 @@ if %errorlevel% equ 0 (
 )
 
 REM Check for Build Tools standalone installations (more common)
-for %%v in (2026 2025 2024 2023 2022 2021 2020 2019 2018 2017) do (
+for %%v in (2026 2025 2024 2023 2022 2021 2020 2019 2018 2017 18 19 20 21 22 23 24 25 26) do (
     if exist "C:\Program Files (x86)\Microsoft Visual Studio\%%v\BuildTools\VC\Tools\MSVC" (
         set MSVC_FOUND=1
         echo [OK] Build Tools for Visual Studio %%v found

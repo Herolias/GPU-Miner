@@ -35,12 +35,6 @@ print(f"GPU Available: {GPU_AVAILABLE}")
 print(f"GPUEngine: {GPUEngine}")
 ```
 
-## Rebuild Information
-
-These binaries are automatically built by GitHub Actions when the source code changes. Each build is tested to ensure compatibility with the target platform.
-
-**Build Workflow:** [.github/workflows/build-gpu-modules.yml](../../.github/workflows/build-gpu-modules.yml)
-
 ## License
 
 The GPU acceleration modules are proprietary software. The binaries are provided for use with the GPU Miner application only. Reverse engineering, decompilation, or modification of these binaries is prohibited.

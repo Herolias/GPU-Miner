@@ -25,6 +25,9 @@ git stash pop
 - **CUDA-capable GPU** (NVIDIA)
 - **CUDA Toolkit 11.8+** ([Download](https://developer.nvidia.com/cuda-downloads))
 
+### Finding GPU Servers
+I recommend using [Vast.ai](https://cloud.vast.ai/?ref_id=352454) for finding GPU servers. They have linux servers with almost all dependencies preinstalled (Select CUDA as template) and offer really good prices.
+
 ### Installation
 
 **Windows:**

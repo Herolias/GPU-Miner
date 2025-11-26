@@ -1,8 +1,8 @@
-numpy>=1.24.0
-requests>=2.31.0
-pycuda>=2022.2.2
-cbor2>=5.4.6
-pycardano>=0.9.0
-PyYAML>=6.0.1
-colorama>=0.4.6
-filelock>=3.12.0
+numpy
+requests
+pycuda
+cbor2
+pycardano
+PyYAML
+colorama
+filelock
