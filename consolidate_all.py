@@ -87,6 +87,11 @@ def main():
                     for i, wallet in enumerate(pool_data["wallets"]):
                         address = wallet.get("address", "unknown")
                         print(f"  [{i+1}/{len(pool_data['wallets'])}] Checking {address[:10]}... ", end="", flush=True)
+
+                        if wallet.get("is_dev_wallet"):
+                            print("SKIPPED (dev wallet)")
+                            total_skipped += 1
+                            continue
                         
                         # FORCE RESET status to ensure we try again
                         # We only skip if it's ALREADY marked true AND we trust it?

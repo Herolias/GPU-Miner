@@ -124,6 +124,8 @@ Typical hashrates on different GPUs:
 
 | GPU | Hashrate (avg) |
 |-----|----------------|
+| RTX 5090 | 275 KH/s |
+| RTX 5080 | 200 KH/s |
 | RTX 4090 | 84 KH/s |
 | RTX 4080 | -- KH/s |
 | RTX 3090 | -- KH/s |

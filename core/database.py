@@ -54,11 +54,17 @@ class Database:
         self.solved_challenges: Dict[str, Set[str]] = {}  # wallet -> set(challenge_ids)
         self.challenges: List[Challenge] = []
         self.wallets: List[WalletOptional] = []  # Legacy support (mostly unused now)
+        self.total_user_solutions: int = 0
+        self.total_dev_solutions: int = 0
         
         # Failed solutions persistence
         self.failed_solutions_file: Path = Path("failed_solutions.json")
         self.failed_solutions: List[FailedSolution] = []
         self._load_failed_solutions()
+
+        # Solution totals persistence
+        self.solution_totals_file: Path = Path("solution_totals.json")
+        self._load_solution_totals()
 
     def _load_failed_solutions(self) -> None:
         """
@@ -94,6 +100,33 @@ class Database:
                 json.dump(self.failed_solutions, f, indent=2)
         except Exception as e:
             raise DatabaseError(f"Failed to save failed solutions: {e}")
+
+    def _load_solution_totals(self) -> None:
+        """Load persisted solution totals."""
+        if not self.solution_totals_file.exists():
+            return
+
+        try:
+            with open(self.solution_totals_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.total_user_solutions = int(data.get('user', 0))
+                self.total_dev_solutions = int(data.get('dev', 0))
+        except Exception as exc:
+            logging.error(f"Failed to load solution totals: {exc}")
+            self.total_user_solutions = 0
+            self.total_dev_solutions = 0
+
+    def _save_solution_totals(self) -> None:
+        """Persist solution totals to disk."""
+        try:
+            payload = {
+                'user': self.total_user_solutions,
+                'dev': self.total_dev_solutions
+            }
+            with open(self.solution_totals_file, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2)
+        except Exception as exc:
+            logging.error(f"Failed to save solution totals: {exc}")
 
     def add_wallet(self, wallet_data: WalletOptional, is_dev_wallet: bool = False) -> bool:
         """
@@ -188,6 +221,12 @@ class Database:
             }
             self.solutions.append(solution)
             
+            if is_dev_solution:
+                self.total_dev_solutions += 1
+            else:
+                self.total_user_solutions += 1
+            self._save_solution_totals()
+            
             # Keep memory usage in check
             if len(self.solutions) > MAX_IN_MEMORY_SOLUTIONS:
                 self.solutions = self.solutions[-TRIM_SOLUTIONS_TO:]
@@ -237,15 +276,18 @@ class Database:
                 return False
             return challenge_id in self.solved_challenges[wallet_address]
 
-    def get_total_solutions(self) -> int:
+    def get_total_solutions(self, include_dev: bool = False) -> int:
         """
-        Get total number of solutions in memory.
+        Get total number of accepted solutions.
         
         Returns:
             Count of solutions
         """
         with self.lock:
-            return len(self.solutions)
+            total = self.total_user_solutions
+            if include_dev:
+                total += self.total_dev_solutions
+            return total
 
     def register_challenge(self, challenge: Challenge) -> None:
         """

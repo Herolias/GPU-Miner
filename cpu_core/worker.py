@@ -10,6 +10,7 @@ from pathlib import Path
 # Add parent directory to path to find modules
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
+from core.constants import CPU_MINING_BATCH_SIZE
 from core.rom_handler import rom_handler
 
 class CPUWorker(mp.Process):
@@ -102,7 +103,7 @@ class CPUWorker(mp.Process):
             
             # Batch size for reporting/checking
             # 1000 hashes takes ~0.5s (based on 0.5ms per hash benchmark)
-            loop_batch = 1000
+            loop_batch = CPU_MINING_BATCH_SIZE
             
             start_time = time.time()
             

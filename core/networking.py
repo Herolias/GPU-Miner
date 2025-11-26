@@ -4,20 +4,43 @@ import logging
 import threading
 import queue
 from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, Tuple
+
 from .config import config
+from .constants import (
+    SOLUTION_RETRY_EXPIRY_HOURS,
+    API_MAX_RETRIES,
+    API_RETRY_BACKOFF_BASE,
+    API_REQUEST_TIMEOUT,
+    WALLET_REGISTRATION_MAX_RETRIES,
+    CONSOLIDATION_MAX_RETRIES
+)
+from .exceptions import APIError, APITimeoutError, APIConnectionError
 
 
 class SolutionSubmissionQueue:
-    """Background queue for non-blocking solution submission with retry logic."""
+    """
+    Background queue for non-blocking solution submission with retry logic.
     
-    def __init__(self, api_client):
-        self.api_client = api_client
-        self.queue = queue.Queue()
-        self.running = False
-        self.thread = None
-        self.retry_hours = config.get("api.solution_retry_hours", 24)
+    Manages solution submissions in a background thread, automatically retrying
+    failed submissions for up to SOLUTION_RETRY_EXPIRY_HOURS. Uses exponential
+    backoff for transient errors and discards solutions with fatal errors.
+    """
+    
+    def __init__(self, api_client: 'APIClient') -> None:
+        """
+        Initialize the submission queue.
         
-    def start(self):
+        Args:
+            api_client: Reference to parent APIClient instance
+        """
+        self.api_client: APIClient = api_client
+        self.queue: queue.Queue = queue.Queue()
+        self.running: bool = False
+        self.thread: Optional[threading.Thread] = None
+        self.retry_hours: int = config.get("api.solution_retry_hours", SOLUTION_RETRY_EXPIRY_HOURS)
+        
+    def start(self) -> None:
         """Start the background submission thread."""
         if self.running:
             return
@@ -27,16 +50,23 @@ class SolutionSubmissionQueue:
         self.thread.start()
         logging.info("Solution submission queue started")
     
-    def stop(self):
+    def stop(self) -> None:
         """Stop the background submission thread."""
         self.running = False
         if self.thread:
             self.thread.join(timeout=5)
         logging.info("Solution submission queue stopped")
     
-    def submit(self, wallet_address, challenge_id, nonce):
-        """Add a solution to the submission queue."""
-        submission = {
+    def submit(self, wallet_address: str, challenge_id: str, nonce: str) -> None:
+        """
+        Add a solution to the submission queue.
+        
+        Args:
+            wallet_address: Wallet that found the solution
+            challenge_id: Challenge identifier
+           nonce: Solution nonce as hex string
+        """
+        submission: Dict[str, Any] = {
             'wallet_address': wallet_address,
             'challenge_id': challenge_id,
             'nonce': nonce,
@@ -46,9 +76,14 @@ class SolutionSubmissionQueue:
         self.queue.put(submission)
         logging.debug(f"Solution queued: {challenge_id[:8]}... nonce={nonce}")
     
-    def _process_queue(self):
-        """Background thread that processes solution submissions with retry logic."""
-        retry_queue = []
+    def _process_queue(self) -> None:
+        """
+        Background thread that processes solution submissions with retry logic.
+        
+        Continuously processes queued solutions, retrying failed submissions with
+        exponential backoff. Discards solutions that are too old or have fatal errors.
+        """
+        retry_queue: list[Dict[str, Any]] = []
         
         while self.running:
             try:
@@ -60,11 +95,11 @@ class SolutionSubmissionQueue:
                     pass
                 
                 # Process retry queue
-                still_retrying = []
+                still_retrying: list[Dict[str, Any]] = []
                 for submission in retry_queue:
                     age = datetime.now() - submission['created_at']
                     
-                    # Check if solution has expired (older than retry_hours)
+                    # Check if solution has expired
                     if age > timedelta(hours=self.retry_hours):
                         logging.warning(
                             f"Solution expired after {self.retry_hours}h, discarding: "
@@ -112,47 +147,68 @@ class SolutionSubmissionQueue:
 
 
 class APIClient:
-    def __init__(self):
-        self.base_url = config.get("miner.api_url")
-        self.session = requests.Session()
+    """
+    API client for communicating with the mining server.
+    
+    Handles all HTTP requests to the mining API with automatic retry logic
+    and exponential backoff. Manages solution submissions through a background
+    queue for non-blocking operation.
+    """
+    
+    def __init__(self) -> None:
+        """Initialize API client with configuration and background queue."""
+        self.base_url: str = config.get("miner.api_url")
+        self.session: requests.Session = requests.Session()
         self.session.headers.update({
             "User-Agent": f"MidnightGPU/{config.get('miner.version')}",
             "Content-Type": "application/json"
         })
         
         # Initialize solution submission queue
-        self.solution_queue = SolutionSubmissionQueue(self)
+        self.solution_queue: SolutionSubmissionQueue = SolutionSubmissionQueue(self)
         self.solution_queue.start()
         
         # Retry configuration
-        self.max_retries = config.get("api.max_retries", 5)
-        self.retry_delay_base = config.get("api.retry_delay_base", 2)
+        self.max_retries: int = config.get("api.max_retries", API_MAX_RETRIES)
+        self.retry_delay_base: int = config.get("api.retry_delay_base", API_RETRY_BACKOFF_BASE)
 
-    def _request(self, method, endpoint, max_retries=None, **kwargs):
+    def _request(
+        self,
+        method: str,
+        endpoint: str,
+        max_retries: Optional[int] = None,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
         """
-        Make HTTP request with retry logic.
+        Make HTTP request with retry logic and exponential backoff.
         
         Args:
             method: HTTP method (GET, POST, etc.)
-            endpoint: API endpoint
+            endpoint: API endpoint path
             max_retries: Number of retry attempts (defaults to configured value)
             **kwargs: Additional arguments passed to requests
             
         Returns:
-            JSON response data
+            JSON response data as dictionary
             
         Raises:
-            Exception: If all retry attempts fail
+            requests.exceptions.HTTPError: For 4xx client errors (except 429)
+            APIError: If all retry attempts fail
         """
         if max_retries is None:
             max_retries = self.max_retries
             
         url = f"{self.base_url}{endpoint}"
-        last_exception = None
+        last_exception: Optional[Exception] = None
         
         for attempt in range(max_retries):
             try:
-                response = self.session.request(method, url, timeout=15, **kwargs)
+                response = self.session.request(
+                    method,
+                    url,
+                    timeout=API_REQUEST_TIMEOUT,
+                    **kwargs
+                )
                 response.raise_for_status()
                 return response.json()
                 
@@ -196,12 +252,17 @@ class APIClient:
                 logging.debug(f"Retrying in {delay}s...")
                 time.sleep(delay)
         
-        raise Exception(
+        raise APIError(
             f"Failed to connect to API after {max_retries} attempts: {last_exception}"
         )
 
-    def get_current_challenge(self):
-        """Get the current mining challenge."""
+    def get_current_challenge(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the current mining challenge from the server.
+        
+        Returns:
+            Challenge data dictionary, or None if unavailable
+        """
         try:
             data = self._request("GET", "/challenge", max_retries=3)
             challenge = data.get('challenge')
@@ -212,18 +273,24 @@ class APIClient:
             logging.error(f"Failed to get current challenge: {e}")
             return None
 
-    def register_wallet(self, address, signature, pubkey, max_retries=10):
+    def register_wallet(
+        self,
+        address: str,
+        signature: str,
+        pubkey: str,
+        max_retries: int = WALLET_REGISTRATION_MAX_RETRIES
+    ) -> bool:
         """
-        Register a wallet with retry logic.
+        Register a wallet with the mining server.
         
         Args:
             address: Wallet address
-            signature: Signature hex
-            pubkey: Public key hex
-            max_retries: Number of retry attempts (default: 10)
+            signature: Signature hex string
+            pubkey: Public key hex string
+            max_retries: Number of retry attempts
             
         Returns:
-            bool: True if registration successful or wallet already registered
+            True if registration successful or wallet already registered
         """
         endpoint = f"/register/{address}/{signature}/{pubkey}"
         try:
@@ -241,35 +308,52 @@ class APIClient:
             logging.error(f"Failed to register wallet after {max_retries} attempts: {e}")
             return False
 
-    def submit_solution(self, wallet_address, challenge_id, nonce):
+    def submit_solution(
+        self,
+        wallet_address: str,
+        challenge_id: str,
+        nonce: str
+    ) -> Tuple[bool, bool]:
         """
         Submit solution to background queue for non-blocking retry.
         
         This method immediately returns and the solution is processed in the background.
-        Retries automatically for up to 24 hours until successful or expired.
+        Retries automatically for up to SOLUTION_RETRY_EXPIRY_HOURS hours until
+        successful or expired.
         
         Args:
             wallet_address: Wallet address
-            challenge_id: Challenge ID
-            nonce: Nonce hex string
+            challenge_id: Challenge identifier
+            nonce: Nonce as hex string
             
         Returns:
-            tuple: (True, False) - Always returns success since it's queued
+            Tuple of (success, is_fatal) - always (True, False) since it's queued
         """
         self.solution_queue.submit(wallet_address, challenge_id, nonce)
         return True, False
     
-    def _submit_solution_direct(self, wallet_address, challenge_id, nonce):
+    def _submit_solution_direct(
+        self,
+        wallet_address: str,
+        challenge_id: str,
+        nonce: str
+    ) -> Tuple[bool, bool]:
         """
         Direct solution submission (used internally by queue).
         
+        Args:
+            wallet_address: Wallet address
+            challenge_id: Challenge identifier
+            nonce: Nonce as hex string
+            
         Returns:
-            tuple: (success: bool, is_fatal: bool)
+            Tuple of (success: bool, is_fatal: bool)
+            - success: True if submission successful
+            - is_fatal: True if error is permanent (don't retry)
         """
         endpoint = f"/solution/{wallet_address}/{challenge_id}/{nonce}"
         try:
-            response = self._request("POST", endpoint, max_retries=1)  # Single attempt, queue handles retries
-            # Log response for debugging
+            response = self._request("POST", endpoint, max_retries=1)  # Single attempt
             logging.info(f"Submission Response: {response}")
             return True, False
         except requests.exceptions.HTTPError as e:
@@ -283,18 +367,24 @@ class APIClient:
             logging.debug(f"Solution submission error: {e}")
             return False, False
 
-    def consolidate_wallet(self, destination_address, original_address, signature_hex, max_retries=5):
+    def consolidate_wallet(
+        self,
+        destination_address: str,
+        original_address: str,
+        signature_hex: str,
+        max_retries: int = CONSOLIDATION_MAX_RETRIES
+    ) -> bool:
         """
-        Consolidate wallet to a destination address with retry logic.
+        Consolidate wallet earnings to a destination address.
         
         Args:
             destination_address: Destination wallet address
-            original_address: Original wallet address
-            signature_hex: Signature hex
-            max_retries: Number of retry attempts (default: 5)
+            original_address: Original wallet address to consolidate from
+            signature_hex: Signature hex string
+            max_retries: Number of retry attempts
             
         Returns:
-            bool: True if consolidation successful or already consolidated
+            True if consolidation successful or already consolidated
         """
         endpoint = f"/donate_to/{destination_address}/{original_address}/{signature_hex}"
         try:
@@ -316,12 +406,17 @@ class APIClient:
             logging.error(f"Failed to consolidate wallet after {max_retries} attempts: {e}")
             return False
 
-    def get_terms(self):
-        """Gets the terms and conditions"""
+    def get_terms(self) -> str:
+        """
+        Get the terms and conditions text.
+        
+        Returns:
+            Terms and conditions agreement string
+        """
         # Defensio T&C
         return "I agree to abide by the terms and conditions as described in version 1-0 of the Defensio DFO mining process: 2da58cd94d6ccf3d933c4a55ebc720ba03b829b84033b4844aafc36828477cc0"
     
-    def shutdown(self):
+    def shutdown(self) -> None:
         """Cleanup method to stop background threads."""
         if hasattr(self, 'solution_queue'):
             self.solution_queue.stop()
@@ -329,4 +424,3 @@ class APIClient:
 
 # Global instance
 api = APIClient()
-
