@@ -116,7 +116,7 @@ class MiningCoordinator:
             req_id=req_id,
             wallet=wallet,
             challenge=challenge,
-            full_difficulty=(worker_type == 'cpu')
+            full_difficulty=False # CPU now uses 32-bit difficulty same as GPU
         )
         
         # Send to appropriate queue

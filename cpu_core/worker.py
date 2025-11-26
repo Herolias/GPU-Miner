@@ -102,10 +102,13 @@ class CPUWorker(mp.Process):
             # Preimage: nonce_hex + salt_prefix
             
             # Batch size for reporting/checking
-            # 1000 hashes takes ~0.5s (based on 0.5ms per hash benchmark)
-            loop_batch = CPU_MINING_BATCH_SIZE
+            # Reduced from 2000 to 50 for faster feedback during testing
+            loop_batch = 50
             
             start_time = time.time()
+            
+            # Log before starting to confirm we reach the mining loop
+            self.logger.info(f"CPU Worker {self.worker_id}: Starting batch of {loop_batch} hashes, start_nonce={start_nonce}")
             
             for i in range(loop_batch):
                 if self.shutdown_event.is_set():
@@ -128,8 +131,8 @@ class CPUWorker(mp.Process):
                 # head <= target
                 
                 # Optimization: Parse directly from hex
-                # Parse full 256-bit digest
-                digest_int = int(digest_hex, 16)
+                # Parse first 32 bits (8 hex chars) to match reference implementation
+                digest_int = int(digest_hex[:8], 16)
                 
                 # Debug logging for first few hashes to verify values (limit output size)
                 if i < 5:
@@ -137,6 +140,7 @@ class CPUWorker(mp.Process):
 
                 if digest_int <= target_difficulty:
                     self.logger.info(f"CPU Found Solution! Nonce={current_nonce}, Hex={digest_hex}, Int={digest_int}, Target={target_difficulty}")
+                    self.logger.info(f"Preimage: {preimage_str}")
                     self.response_queue.put({
                         'request_id': request_id,
                         'found': True,

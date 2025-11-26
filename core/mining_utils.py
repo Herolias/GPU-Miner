@@ -39,6 +39,12 @@ def build_salt_prefix(wallet: WalletOptional, challenge: Challenge) -> bytes:
         challenge.get('latest_submission', '') +
         challenge.get('no_pre_mine_hour', '')
     )
+    
+    # Debug logging to verify salt construction
+    import logging
+    logging.debug(f"Salt Prefix Components: Addr={wallet['address'][:8]}... ID={challenge['challenge_id'][:8]}... Diff={challenge['difficulty']} Key={challenge['no_pre_mine'][:8]}... Latest={challenge.get('latest_submission', '')[:8]}... Hour={challenge.get('no_pre_mine_hour', '')}")
+    logging.debug(f"Full Salt Prefix: {salt_prefix_str}")
+    
     return salt_prefix_str.encode('utf-8')
 
 
@@ -63,8 +69,10 @@ def parse_difficulty(difficulty_str: str, full: bool = False) -> int:
         # Parse full 256-bit difficulty (64 hex chars)
         return int(difficulty_str, 16)
     else:
-        # Parse first 32 bits (8 hex chars) for GPU
-        return int(difficulty_str[:8], 16)
+        # Parse first 32 bits (8 hex chars) for GPU/CPU
+        # Handle optional '0x' prefix to ensure we get the correct 8 chars
+        clean_diff = difficulty_str.lower().replace('0x', '')
+        return int(clean_diff[:8], 16)
 
 
 def generate_random_nonce() -> int:
