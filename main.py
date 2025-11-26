@@ -18,7 +18,21 @@ from core.logger import setup_logging
 from core.config import config
 from core.miner_manager import MinerManager
 
+def _init_multiprocessing():
+    """Initialize multiprocessing with appropriate settings."""
+    import multiprocessing as mp
+    # Explicitly set spawn mode for consistency across platforms
+    # This is the default on Windows but not on Linux/Mac
+    try:
+        mp.set_start_method('spawn', force=False)
+    except RuntimeError:
+        # Already set, ignore
+        pass
+
 def main():
+    # Configure multiprocessing first
+    _init_multiprocessing()
+    
     # Initialize logging
     setup_logging(level=logging.INFO)
     

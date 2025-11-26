@@ -121,5 +121,30 @@ class ROMHandler:
             raise ROMBuildError(rom_key, str(e)) from e
 
 
-# Global instance
-rom_handler = ROMHandler()
+# Global instance - lazy initialization
+_rom_handler_instance: Optional[ROMHandler] = None
+_rom_handler_lock = None
+
+def get_rom_handler() -> ROMHandler:
+    """
+    Get or create the global ROMHandler instance.
+    Uses lazy initialization to avoid loading the library during module import.
+    This is critical for multiprocessing on Windows (spawn mode).
+    """
+    global _rom_handler_instance, _rom_handler_lock
+    
+    if _rom_handler_instance is None:
+        # Import threading here to avoid issues during multiprocessing spawn
+        import threading
+        if _rom_handler_lock is None:
+            _rom_handler_lock = threading.Lock()
+        
+        with _rom_handler_lock:
+            # Double-check pattern
+            if _rom_handler_instance is None:
+                _rom_handler_instance = ROMHandler()
+    
+    return _rom_handler_instance
+
+# Legacy compatibility - for direct attribute access
+rom_handler = None  # Will be None until get_rom_handler() is called

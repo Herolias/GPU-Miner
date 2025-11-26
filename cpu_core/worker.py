@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from core.constants import CPU_MINING_BATCH_SIZE
-from core.rom_handler import rom_handler
+# ROM handler will be imported lazily in run() to avoid multiprocessing issues
 
 class CPUWorker(mp.Process):
     def __init__(self, worker_id, request_queue, response_queue):
@@ -33,12 +33,13 @@ class CPUWorker(mp.Process):
         self.logger.info(f"CPU Worker {self.worker_id} started")
 
         try:
+            # Lazy load ROM handler to avoid import-time library loading
+            # This prevents multiprocessing spawn issues on Windows
+            from core.rom_handler import get_rom_handler
+            rom_handler = get_rom_handler()
+            
             # Load library
             self.ashmaize = rom_handler.ashmaize
-            if not self.ashmaize:
-                # Try to load it again if not present
-                self.ashmaize = rom_handler._load_library()
-            
             if not self.ashmaize:
                 raise Exception("Failed to load ashmaize library in worker")
 

@@ -91,11 +91,12 @@ class MinerManager:
 
         gpu_enabled = config.get("gpu.enabled")
 
-        # Start GPU Engines
+        # CRITICAL: Start GPU Engines FIRST (if enabled) and wait for them to be ready
+        # This prevents CPU resource contention during GPU kernel compilation
         if gpu_enabled:
             self._start_gpu_engines()
 
-        # Start CPU Workers
+        # Start CPU Workers AFTER GPU initialization completes
         cpu_enabled = config.get("cpu.enabled")
         if cpu_enabled:
             # Reset CPU pool state on startup to clear stuck wallets
@@ -152,9 +153,6 @@ class MinerManager:
                 p.start()
                 self.gpu_processes.append(p)
                 logging.info(f"Started GPU Engine {i}")
-                
-                # Stagger start to avoid massive CPU spike during compilation
-                time.sleep(config.get("gpu.kernel_build_delay", 5))
 
         except Exception as e:
             logging.error(f"Failed to start GPU engines: {e}")
