@@ -113,7 +113,7 @@ class CPUWorker(mp.Process):
             start_time = time.time()
             
             # Log before starting to confirm we reach the mining loop
-            self.logger.info(f"CPU Worker {self.worker_id}: Starting batch of {loop_batch} hashes, start_nonce={start_nonce}")
+            #self.logger.info(f"CPU Worker {self.worker_id}: Starting batch of {loop_batch} hashes, start_nonce={start_nonce}")
             
             for i in range(loop_batch):
                 if self.shutdown_event.is_set():
