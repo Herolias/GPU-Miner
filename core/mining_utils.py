@@ -40,11 +40,6 @@ def build_salt_prefix(wallet: WalletOptional, challenge: Challenge) -> bytes:
         challenge.get('no_pre_mine_hour', '')
     )
     
-    # Debug logging to verify salt construction
-    import logging
-    logging.debug(f"Salt Prefix Components: Addr={wallet['address'][:8]}... ID={challenge['challenge_id'][:8]}... Diff={challenge['difficulty']} Key={challenge['no_pre_mine'][:8]}... Latest={challenge.get('latest_submission', '')[:8]}... Hour={challenge.get('no_pre_mine_hour', '')}")
-    logging.debug(f"Full Salt Prefix: {salt_prefix_str}")
-    
     return salt_prefix_str.encode('utf-8')
 
 

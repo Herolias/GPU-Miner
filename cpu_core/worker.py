@@ -78,7 +78,9 @@ class CPUWorker(mp.Process):
             if rom_key not in rom_cache:
                 self.logger.info(f"Building ROM {rom_key[:8]}...")
                 # Using 1GB size as requested
-                rom_obj = self.ashmaize.build_rom_twostep(rom_key, 1073741824, 16777216, 1)
+                # Signature: key, size, pre_size, mixing_numbers
+                # Reference uses mixing_numbers=4
+                rom_obj = self.ashmaize.build_rom_twostep(rom_key, 1073741824, 16777216, 4)
                 if not rom_obj:
                     raise Exception("Failed to build ROM")
                 rom_cache[rom_key] = rom_obj
@@ -136,13 +138,10 @@ class CPUWorker(mp.Process):
                 # Parse first 32 bits (8 hex chars) to match reference implementation
                 digest_int = int(digest_hex[:8], 16)
                 
-                # Debug logging for first few hashes to verify values (limit output size)
-                if i < 5:
-                     self.logger.info(f"Debug: Nonce={current_nonce}, Hex={digest_hex[:32]}..., Match={digest_int <= target_difficulty}")
+
 
                 if digest_int <= target_difficulty:
                     self.logger.info(f"CPU Found Solution! Nonce={current_nonce}, Hex={digest_hex}, Int={digest_int}, Target={target_difficulty}")
-                    self.logger.info(f"Preimage: {preimage_str}")
                     self.response_queue.put({
                         'request_id': request_id,
                         'found': True,

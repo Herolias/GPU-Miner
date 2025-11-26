@@ -20,7 +20,7 @@ from core.miner_manager import MinerManager
 
 def main():
     # Initialize logging
-    setup_logging(level=logging.DEBUG)
+    setup_logging(level=logging.INFO)
     
     # Parse CLI arguments
     import argparse
@@ -44,7 +44,7 @@ def main():
     
     # Setup signal handler for clean shutdown
     def signal_handler(sig, frame):
-        logging.info("\nShutdown requested by user")
+        logging.info("\\nShutdown requested by user")
         manager.stop()
         sys.exit(0)
     
@@ -57,7 +57,7 @@ def main():
             import time
             time.sleep(1)
     except KeyboardInterrupt:
-        logging.info("\nShutdown requested by user")
+        logging.info("\\nShutdown requested by user")
     finally:
         logging.info("Shutting down...")
         manager.stop()
