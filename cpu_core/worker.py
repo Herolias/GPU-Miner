@@ -26,7 +26,7 @@ class CPUWorker(mp.Process):
     def run(self):
         # Setup logging in this process
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG,
             format=f'%(asctime)s - CPU-{self.worker_id} - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(f'cpu_worker_{self.worker_id}')
@@ -103,7 +103,9 @@ class CPUWorker(mp.Process):
             
             # Batch size for reporting/checking
             # Reduced from 2000 to 50 for faster feedback during testing
-            loop_batch = 50
+            # Batch size for reporting/checking
+            # Increased to 5000 to improve CPU utilization and reduce overhead
+            loop_batch = 5000
             
             start_time = time.time()
             

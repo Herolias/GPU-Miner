@@ -20,7 +20,7 @@ from core.miner_manager import MinerManager
 
 def main():
     # Initialize logging
-    setup_logging()
+    setup_logging(level=logging.DEBUG)
     
     # Parse CLI arguments
     import argparse
