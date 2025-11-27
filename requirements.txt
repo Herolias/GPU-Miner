@@ -6,3 +6,4 @@ pycardano
 PyYAML
 colorama
 filelock
+psutil

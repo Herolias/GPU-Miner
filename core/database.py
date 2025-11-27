@@ -1,329 +1,425 @@
-import sqlite3
-import threading
 import logging
+import threading
 import json
-from datetime import datetime, timezone
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Set, Any
+
+from .constants import (
+    MAX_IN_MEMORY_SOLUTIONS,
+    TRIM_SOLUTIONS_TO,
+    MAX_IN_MEMORY_CHALLENGES,
+    TRIM_CHALLENGES_TO,
+    SOLUTION_RETRY_EXPIRY_HOURS,
+    SOLUTION_RETRY_INTERVAL_HOURS
+)
+from .types import Solution, Challenge, FailedSolution, WalletOptional
+from .exceptions import DatabaseError
+
 
 class Database:
-    _instance = None
-    _lock = threading.Lock()
+    """
+    In-memory database for tracking mining state.
+    
+    Implements singleton pattern with thread-safe operations. Stores solutions,
+    challenges, and wallet information in memory with automatic size limits.
+    Failed solutions are persisted to disk for retry across restarts.
+    
+    Thread Safety:
+        All public methods are thread-safe using a global lock.
+    """
+    
+    _instance: Optional['Database'] = None
+    _lock: threading.Lock = threading.Lock()
 
-    def __new__(cls, db_path="miner_state.db"):
+    def __new__(cls) -> 'Database':
+        """Create or return singleton instance."""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super(Database, cls).__new__(cls)
-                    cls._instance.db_path = db_path
-                    cls._instance.local = threading.local()
-                    cls._instance._init_db()
+                    cls._instance._initialized = False
         return cls._instance
 
-    def _get_conn(self):
-        """Get thread-local connection"""
-        if not hasattr(self.local, 'conn'):
-            self.local.conn = sqlite3.connect(self.db_path)
-            self.local.conn.row_factory = sqlite3.Row
-        return self.local.conn
+    def __init__(self) -> None:
+        """Initialize database with in-memory storage and load persisted data."""
+        if self._initialized:
+            return
+            
+        self._initialized: bool = True
+        self.lock: threading.Lock = threading.Lock()
+        
+        # In-memory storage
+        self.solutions: List[Solution] = []
+        self.solved_challenges: Dict[str, Set[str]] = {}  # wallet -> set(challenge_ids)
+        self.challenges: List[Challenge] = []
+        self.wallets: List[WalletOptional] = []  # Legacy support (mostly unused now)
+        self.total_user_solutions: int = 0
+        self.total_dev_solutions: int = 0
+        
+        # Failed solutions persistence
+        self.failed_solutions_file: Path = Path("failed_solutions.json")
+        self.failed_solutions: List[FailedSolution] = []
+        self._load_failed_solutions()
 
-    def _init_db(self):
-        """Initialize database schema"""
+        # Solution totals persistence
+        self.solution_totals_file: Path = Path("solution_totals.json")
+        self._load_solution_totals()
+
+    def _load_failed_solutions(self) -> None:
+        """
+        Load failed solutions from disk and prune expired entries.
+        
+        Loads solutions from failed_solutions.json and removes any that are
+        older than SOLUTION_RETRY_EXPIRY_HOURS.
+        """
+        if not self.failed_solutions_file.exists():
+            return
+            
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Wallets Table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS wallets (
-                    address TEXT PRIMARY KEY,
-                    pubkey TEXT,
-                    signing_key TEXT,
-                    signature TEXT,
-                    created_at TIMESTAMP,
-                    is_consolidated BOOLEAN DEFAULT 0,
-                    balance_approx REAL DEFAULT 0,
-                    is_dev_wallet BOOLEAN DEFAULT 0
-                )
-            ''')
-
-            # Solutions Table (Found nonces)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS solutions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    challenge_id TEXT,
-                    nonce TEXT,
-                    address TEXT,
-                    difficulty TEXT,
-                    found_at TIMESTAMP,
-                    status TEXT DEFAULT 'pending', -- pending, accepted, rejected
-                    is_dev_solution BOOLEAN DEFAULT 0,
-                    FOREIGN KEY(address) REFERENCES wallets(address)
-                )
-            ''')
-
-            # Challenges Table (Track seen challenges)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS challenges (
-                    challenge_id TEXT PRIMARY KEY,
-                    difficulty TEXT,
-                    no_pre_mine TEXT,
-                    no_pre_mine_hour TEXT,
-                    latest_submission TIMESTAMP,
-                    first_seen_at TIMESTAMP
-                )
-            ''')
-            
-            # Wallet-Challenge tracking (prevent duplicate work)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS wallet_challenges (
-                    wallet_address TEXT,
-                    challenge_id TEXT,
-                    solved_at TIMESTAMP,
-                    PRIMARY KEY (wallet_address, challenge_id),
-                    FOREIGN KEY(wallet_address) REFERENCES wallets(address),
-                    FOREIGN KEY(challenge_id) REFERENCES challenges(challenge_id)
-                )
-            ''')
-            
-            # Migrate existing tables to add new columns if they don't exist
-            try:
-                cursor.execute('ALTER TABLE wallets ADD COLUMN is_dev_wallet BOOLEAN DEFAULT 0')
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-            
-            try:
-                cursor.execute('ALTER TABLE solutions ADD COLUMN is_dev_solution BOOLEAN DEFAULT 0')
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-
-            try:
-                cursor.execute('ALTER TABLE challenges ADD COLUMN no_pre_mine_hour TEXT')
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-            
-            conn.commit()
-            conn.close()
-            logging.info(f"Database initialized at {self.db_path}")
+            with open(self.failed_solutions_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Prune old entries
+                cutoff = datetime.now() - timedelta(hours=SOLUTION_RETRY_EXPIRY_HOURS)
+                self.failed_solutions = [
+                    s for s in data 
+                    if datetime.fromisoformat(s.get('timestamp', datetime.now().isoformat())) > cutoff
+                ]
+                logging.info(f"Loaded {len(self.failed_solutions)} pending failed solutions")
+        except json.JSONDecodeError as e:
+            logging.error(f"Invalid JSON in failed solutions file: {e}")
+            self.failed_solutions = []
         except Exception as e:
-            logging.critical(f"Failed to initialize database: {e}")
-            raise
+            logging.error(f"Error loading failed solutions: {e}")
+            self.failed_solutions = []
 
-    def add_wallet(self, wallet_data, is_dev_wallet=False):
-        conn = self._get_conn()
+    def _save_failed_solutions(self) -> None:
+        """Save failed solutions to disk for persistence across restarts."""
         try:
-            conn.execute('''
-                INSERT OR IGNORE INTO wallets (address, pubkey, signing_key, signature, created_at, is_dev_wallet)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                wallet_data['address'],
-                wallet_data['pubkey'],
-                wallet_data['signing_key'],
-                wallet_data['signature'],
-                wallet_data.get('created_at', datetime.now().isoformat()),
-                1 if is_dev_wallet else 0
-            ))
-            conn.commit()
+            with open(self.failed_solutions_file, 'w', encoding='utf-8') as f:
+                json.dump(self.failed_solutions, f, indent=2)
+        except Exception as e:
+            raise DatabaseError(f"Failed to save failed solutions: {e}")
+
+    def _load_solution_totals(self) -> None:
+        """Load persisted solution totals."""
+        if not self.solution_totals_file.exists():
+            return
+
+        try:
+            with open(self.solution_totals_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.total_user_solutions = int(data.get('user', 0))
+                self.total_dev_solutions = int(data.get('dev', 0))
+        except Exception as exc:
+            logging.error(f"Failed to load solution totals: {exc}")
+            self.total_user_solutions = 0
+            self.total_dev_solutions = 0
+
+    def _save_solution_totals(self) -> None:
+        """Persist solution totals to disk."""
+        try:
+            payload = {
+                'user': self.total_user_solutions,
+                'dev': self.total_dev_solutions
+            }
+            with open(self.solution_totals_file, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2)
+        except Exception as exc:
+            logging.error(f"Failed to save solution totals: {exc}")
+
+    def add_wallet(self, wallet_data: WalletOptional, is_dev_wallet: bool = False) -> bool:
+        """
+        Add a wallet to the database.
+        
+        Args:
+            wallet_data: Wallet information dict
+            is_dev_wallet: Whether this is a dev wallet
+            
+        Returns:
+            True if wallet was added, False if it already exists
+        """
+        with self.lock:
+            # Avoid duplicates
+            address = wallet_data.get('address', '')
+            for w in self.wallets:
+                if w.get('address') == address:
+                    return False
+            
+            # Store flag
+            wallet_data['is_dev_wallet'] = is_dev_wallet
+            self.wallets.append(wallet_data)
             return True
-        except Exception as e:
-            logging.error(f"DB Error adding wallet: {e}")
-            return False
 
-    def get_wallets(self, include_dev=False):
-        """Get wallets. By default, excludes dev wallets from the list."""
-        conn = self._get_conn()
-        if include_dev:
-            cursor = conn.execute('SELECT * FROM wallets')
-        else:
-            cursor = conn.execute('SELECT * FROM wallets WHERE is_dev_wallet = 0')
-        return [dict(row) for row in cursor.fetchall()]
-    
-    def get_dev_wallets(self):
-        """Get only dev wallets."""
-        conn = self._get_conn()
-        cursor = conn.execute('SELECT * FROM wallets WHERE is_dev_wallet = 1')
-        return [dict(row) for row in cursor.fetchall()]
-
-    def mark_wallet_consolidated(self, wallet_address):
-        """Mark a wallet as consolidated."""
-        conn = self._get_conn()
-        try:
-            conn.execute('''
-                UPDATE wallets SET is_consolidated = 1 WHERE address = ?
-            ''', (wallet_address,))
-            conn.commit()
-        except Exception as e:
-            logging.error(f"DB Error marking wallet consolidated: {e}")
-
-    def add_solution(self, challenge_id, nonce, address, difficulty, is_dev_solution=False):
-        conn = self._get_conn()
-        try:
-            conn.execute('''
-                INSERT INTO solutions (challenge_id, nonce, address, difficulty, found_at, is_dev_solution)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (challenge_id, nonce, address, difficulty, datetime.now().isoformat(), 1 if is_dev_solution else 0))
-            conn.commit()
-        except Exception as e:
-            logging.error(f"DB Error adding solution: {e}")
-
-    def update_solution_status(self, challenge_id, nonce, status):
-        conn = self._get_conn()
-        try:
-            conn.execute('''
-                UPDATE solutions SET status = ? WHERE challenge_id = ? AND nonce = ?
-            ''', (status, challenge_id, nonce))
-            conn.commit()
-        except Exception as e:
-            logging.error(f"DB Error updating solution: {e}")
-
-    def get_total_solutions(self, include_dev=False):
-        """Get total number of accepted solutions. By default, excludes dev solutions."""
-        conn = self._get_conn()
-        try:
+    def get_wallets(self, include_dev: bool = False) -> List[WalletOptional]:
+        """
+        Get all wallets, optionally including dev wallets.
+        
+        Args:
+            include_dev: If True, include dev wallets in results
+            
+        Returns:
+            List of wallet dicts
+        """
+        with self.lock:
             if include_dev:
-                cursor = conn.execute("SELECT COUNT(*) FROM solutions WHERE status = 'accepted'")
+                return self.wallets.copy()
+            return [w for w in self.wallets if not w.get('is_dev_wallet')]
+
+    def get_dev_wallets(self) -> List[WalletOptional]:
+        """
+        Get all dev wallets.
+        
+        Returns:
+            List of dev wallet dicts
+        """
+        with self.lock:
+            return [w for w in self.wallets if w.get('is_dev_wallet')]
+
+    def mark_wallet_consolidated(self, wallet_address: str) -> None:
+        """
+        Mark a wallet as consolidated.
+        
+        Args:
+            wallet_address: Address of wallet to mark
+        """
+        with self.lock:
+            for w in self.wallets:
+                if w.get('address') == wallet_address:
+                    w['is_consolidated'] = True
+                    break
+
+    def add_solution(
+        self,
+        challenge_id: str,
+        nonce: str,
+        wallet_address: str,
+        difficulty: str,
+        is_dev_solution: bool = False
+    ) -> None:
+        """
+        Add a solution to the database.
+        
+        Automatically trims solution history when limit is reached.
+        
+        Args:
+            challenge_id: Challenge identifier
+            nonce: Solution nonce
+            wallet_address: Wallet that found the solution
+            difficulty: Challenge difficulty
+            is_dev_solution: Whether this is a dev solution
+        """
+        with self.lock:
+            solution: Solution = {
+                'challenge_id': challenge_id,
+                'nonce': nonce,
+                'wallet_address': wallet_address,
+                'difficulty': difficulty,
+                'is_dev_solution': is_dev_solution,
+                'timestamp': datetime.now().isoformat(),
+                'status': 'submitted'
+            }
+            self.solutions.append(solution)
+            
+            if is_dev_solution:
+                self.total_dev_solutions += 1
             else:
-                cursor = conn.execute("SELECT COUNT(*) FROM solutions WHERE status = 'accepted' AND is_dev_solution = 0")
-            return cursor.fetchone()[0]
-        except Exception as e:
-            logging.error(f"DB Error counting solutions: {e}")
-            return 0
+                self.total_user_solutions += 1
+            self._save_solution_totals()
+            
+            # Keep memory usage in check
+            if len(self.solutions) > MAX_IN_MEMORY_SOLUTIONS:
+                self.solutions = self.solutions[-TRIM_SOLUTIONS_TO:]
+                logging.debug(f"Trimmed solutions to {TRIM_SOLUTIONS_TO} entries")
 
-    def mark_challenge_solved(self, wallet_address, challenge_id):
-        """Mark a challenge as solved by a wallet."""
-        conn = self._get_conn()
-        try:
-            conn.execute('''
-                INSERT OR IGNORE INTO wallet_challenges (wallet_address, challenge_id, solved_at)
-                VALUES (?, ?, ?)
-            ''', (wallet_address, challenge_id, datetime.now().isoformat()))
-            conn.commit()
-        except Exception as e:
-            logging.error(f"DB Error marking challenge solved: {e}")
-
-    def is_challenge_solved(self, wallet_address, challenge_id):
-        """Check if a wallet has already solved a challenge."""
-        conn = self._get_conn()
-        try:
-            cursor = conn.execute('''
-                SELECT 1 FROM wallet_challenges 
-                WHERE wallet_address = ? AND challenge_id = ?
-            ''', (wallet_address, challenge_id))
-            return cursor.fetchone() is not None
-        except Exception as e:
-            logging.error(f"DB Error checking challenge: {e}")
-            return False
-
-    def get_unsolved_challenges_for_wallet(self, wallet_address, all_challenge_ids):
-        """Get list of unsolved challenges for a wallet from a given set."""
-        conn = self._get_conn()
-        try:
-            if not all_challenge_ids:
-                return []
-            placeholders = ','.join('?' * len(all_challenge_ids))
-            cursor = conn.execute(f'''
-                SELECT challenge_id FROM 
-                ({' UNION ALL '.join(['SELECT ? AS challenge_id'] * len(all_challenge_ids))})
-                WHERE challenge_id NOT IN (
-                    SELECT challenge_id FROM wallet_challenges WHERE wallet_address = ?
-                )
-            ''', (*all_challenge_ids, wallet_address))
-            return [row[0] for row in cursor.fetchall()]
-        except Exception as e:
-            logging.error(f"DB Error getting unsolved challenges: {e}")
-            return all_challenge_ids  # Return all on error
-
-    def register_challenge(self, challenge):
-        """Register a challenge in the database."""
-        conn = self._get_conn()
-        try:
-            conn.execute('''
-                INSERT OR REPLACE INTO challenges 
-                (challenge_id, difficulty, no_pre_mine, no_pre_mine_hour, latest_submission, first_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                challenge['challenge_id'],
-                challenge['difficulty'],
-                challenge['no_pre_mine'],
-                challenge.get('no_pre_mine_hour', ''),
-                challenge.get('latest_submission'),
-                datetime.now().isoformat()
-            ))
-            conn.commit()
-        except Exception as e:
-            logging.error(f"DB Error registering challenge: {e}")
-
-    def get_unsolved_challenge_for_wallet(self, wallet_address):
+    def update_solution_status(self, challenge_id: str, nonce: str, status: str) -> None:
         """
-        Get the best challenge for a wallet:
-        - Not solved by this wallet
-        - >120s remaining until latest_submission
-        - Easiest (lowest difficulty value) first
+        Update the status of a solution.
+        
+        Args:
+            challenge_id: Challenge identifier
+            nonce: Solution nonce
+            status: New status ('submitted', 'accepted', 'rejected', etc.)
         """
-        conn = self._get_conn()
-        try:
-            now = datetime.now(timezone.utc)
-            cursor = conn.execute('''
-                SELECT challenge_id, difficulty, no_pre_mine, no_pre_mine_hour, latest_submission
-                FROM challenges
-                WHERE challenge_id NOT IN (
-                    SELECT challenge_id FROM wallet_challenges WHERE wallet_address = ?
-                )
-            ''', (wallet_address,))
-            
-            best = None
-            best_diff = None
-            best_deadline = None
-            
-            for row in cursor.fetchall():
-                challenge_id, difficulty, no_pre_mine, no_pre_mine_hour, latest_submission = row
-                
-                # Parse deadline
-                if not latest_submission:
-                    continue
-                try:
-                    deadline = datetime.fromisoformat(latest_submission.replace('Z', '+00:00'))
-                except:
-                    continue
-                
-                # Check time left
-                time_left = (deadline - now).total_seconds()
-                if time_left <= 120:
-                    continue
-                
-                # Parse difficulty
-                try:
-                    difficulty_val = int(difficulty[:8], 16)
-                except:
-                    continue
-                
-                # Select easiest
-                if best is None or difficulty_val < best_diff:
-                    best = {
-                        'challenge_id': challenge_id,
-                        'difficulty': difficulty,
-                        'no_pre_mine': no_pre_mine,
-                        'latest_submission': latest_submission,
-                        'no_pre_mine_hour': no_pre_mine_hour if no_pre_mine_hour else ''
-                    }
-                    best_diff = difficulty_val
-                    best_deadline = deadline
-                elif difficulty_val == best_diff and deadline < best_deadline:
-                    best = {
-                        'challenge_id': challenge_id,
-                        'difficulty': difficulty,
-                        'no_pre_mine': no_pre_mine,
-                        'latest_submission': latest_submission,
-                        'no_pre_mine_hour': no_pre_mine_hour if no_pre_mine_hour else ''
-                    }
-                    best_deadline = deadline
-            
-            return best
-        except Exception as e:
-            logging.error(f"DB Error getting unsolved challenge: {e}")
-            return None
+        with self.lock:
+            for sol in reversed(self.solutions):
+                if sol['challenge_id'] == challenge_id and sol['nonce'] == nonce:
+                    sol['status'] = status  # type: ignore
+                    break
 
-    def close(self):
-        if hasattr(self.local, 'conn'):
-            self.local.conn.close()
-            del self.local.conn
+    def mark_challenge_solved(self, wallet_address: str, challenge_id: str) -> None:
+        """
+        Mark a challenge as solved by a wallet.
+        
+        Args:
+            wallet_address: Wallet that solved the challenge
+            challenge_id: Challenge identifier
+        """
+        with self.lock:
+            if wallet_address not in self.solved_challenges:
+                self.solved_challenges[wallet_address] = set()
+            self.solved_challenges[wallet_address].add(challenge_id)
 
+    def is_challenge_solved(self, wallet_address: str, challenge_id: str) -> bool:
+        """
+        Check if a wallet has solved a challenge.
+        
+        Args:
+            wallet_address: Wallet to check
+            challenge_id: Challenge to check
+            
+        Returns:
+            True if wallet has solved this challenge
+        """
+        with self.lock:
+            if wallet_address not in self.solved_challenges:
+                return False
+            return challenge_id in self.solved_challenges[wallet_address]
+
+    def get_total_solutions(self, include_dev: bool = False) -> int:
+        """
+        Get total number of accepted solutions.
+        
+        Returns:
+            Count of solutions
+        """
+        with self.lock:
+            total = self.total_user_solutions
+            if include_dev:
+                total += self.total_dev_solutions
+            return total
+
+    def register_challenge(self, challenge: Challenge) -> None:
+        """
+        Register a new challenge.
+        
+        Automatically trims challenge history when limit is reached.
+        Avoids duplicate challenges.
+        
+        Args:
+            challenge: Challenge data dict
+        """
+        with self.lock:
+            # Store unique challenges
+            for c in self.challenges:
+                if c['challenge_id'] == challenge['challenge_id']:
+                    return
+                    
+            self.challenges.append(challenge)
+            
+            # Limit size
+            if len(self.challenges) > MAX_IN_MEMORY_CHALLENGES:
+                self.challenges = self.challenges[-TRIM_CHALLENGES_TO:]
+                logging.debug(f"Trimmed challenges to {TRIM_CHALLENGES_TO} entries")
+
+    def get_unsolved_challenge_for_wallet(self, wallet_address: str) -> Optional[Challenge]:
+        """
+        Get the latest unsolved challenge for a wallet.
+        
+        Args:
+            wallet_address: Wallet to check
+            
+        Returns:
+            Latest challenge if unsolved, None otherwise
+        """
+        with self.lock:
+            # Return the latest challenge if not solved by this wallet
+            if not self.challenges:
+                return None
+            
+            latest = self.challenges[-1]
+            if self.is_challenge_solved(wallet_address, latest['challenge_id']):
+                return None
+            return latest
+
+    # --- Failed Solutions Management ---
+
+    def add_failed_solution(
+        self,
+        wallet_address: str,
+        challenge_id: str,
+        nonce: str,
+        difficulty: str,
+        is_dev_solution: bool
+    ) -> None:
+        """
+        Add a failed solution to persistent retry queue.
+        
+        Args:
+            wallet_address: Wallet that submitted the solution
+            challenge_id: Challenge identifier
+            nonce: Solution nonce
+            difficulty: Challenge difficulty
+            is_dev_solution: Whether this is a dev solution
+        """
+        with self.lock:
+            # Check if already exists
+            for s in self.failed_solutions:
+                if s['challenge_id'] == challenge_id and s['nonce'] == nonce:
+                    return
+
+            entry: FailedSolution = {
+                'wallet_address': wallet_address,
+                'challenge_id': challenge_id,
+                'nonce': nonce,
+                'difficulty': difficulty,
+                'is_dev_solution': is_dev_solution,
+                'timestamp': datetime.now().isoformat(),
+                'retry_count': 0,
+                'last_retry': None
+            }
+            self.failed_solutions.append(entry)
+            self._save_failed_solutions()
+            logging.info(f"Persisted failed solution for retry: {challenge_id[:8]}...")
+
+    def get_pending_retries(self) -> List[FailedSolution]:
+        """
+        Get solutions that are due for retry.
+        
+        Returns solutions that either haven't been retried yet, or where
+        enough time has passed since the last retry (SOLUTION_RETRY_INTERVAL_HOURS).
+        
+        Returns:
+            List of failed solutions ready for retry
+        """
+        with self.lock:
+            now = datetime.now()
+            due: List[FailedSolution] = []
+            
+            for s in self.failed_solutions:
+                last_retry = s.get('last_retry')
+                if last_retry:
+                    last_retry_dt = datetime.fromisoformat(last_retry)
+                    if now - last_retry_dt < timedelta(hours=SOLUTION_RETRY_INTERVAL_HOURS):
+                        continue
+                due.append(s)
+            return due
+
+    def update_retry_status(self, challenge_id: str, nonce: str, success: bool) -> None:
+        """
+        Update retry status for a failed solution.
+        
+        Args:
+            challenge_id: Challenge identifier
+            nonce: Solution nonce
+            success: True if retry succeeded, False otherwise
+        """
+        with self.lock:
+            if success:
+                # Remove from failed solutions
+                self.failed_solutions = [
+                    s for s in self.failed_solutions 
+                    if not (s['challenge_id'] == challenge_id and s['nonce'] == nonce)
+                ]
+            else:
+                # Update retry timestamp
+                for s in self.failed_solutions:
+                    if s['challenge_id'] == challenge_id and s['nonce'] == nonce:
+                        s['last_retry'] = datetime.now().isoformat()
+                        s['retry_count'] = s.get('retry_count', 0) + 1
+                        break
+            self._save_failed_solutions()
+
+
+# Global instance
 db = Database()

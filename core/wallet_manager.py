@@ -1,21 +1,45 @@
+"""
+Wallet Manager Module
+
+Manages wallet lifecycle including generation, registration, and consolidation.
+This module is now a thin wrapper around wallet_utils and the database layer.
+
+Note: Per-GPU wallet pooling is now the primary system (wallet_pool.py).
+This module is primarily used for dev wallet management.
+"""
+
 import logging
 import threading
-from pycardano import PaymentSigningKey, PaymentVerificationKey, Address, Network
-import cbor2
+from typing import List, Optional
+
 from .database import db
 from .networking import api
 from .config import config
 from .dev_fee import dev_fee_manager
+from .constants import DEV_WALLET_FLOOR
+from .types import WalletOptional
+from . import wallet_utils
+
 
 class WalletManager:
-    def __init__(self):
+    """
+    Manages wallet generation, registration, and consolidation.
+    
+    Primarily used for dev wallet management. User wallets are managed
+    through the WalletPool system for per-GPU allocation.
+    """
+    
+    def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._dev_wallet_floor = 2
+        self._dev_wallet_floor = DEV_WALLET_FLOOR
 
-    def _ensure_dev_fee_pool(self, wallet_count=None):
+    def _ensure_dev_fee_pool(self, wallet_count: Optional[int] = None) -> None:
         """
         Maintain a baseline pool of dev wallets so the fee stays active even
         if users tinker with the config or wallet counts.
+        
+        Args:
+            wallet_count: Number of user wallets (if known), used to calculate dev wallet target
         """
         try:
             user_wallet_count = wallet_count if wallet_count is not None else len(db.get_wallets())
@@ -24,6 +48,7 @@ class WalletManager:
             return
 
         target = max(self._dev_wallet_floor, max(1, user_wallet_count // 4))
+        
         try:
             dev_wallets = db.get_dev_wallets()
         except Exception as exc:
@@ -36,86 +61,62 @@ class WalletManager:
         logging.debug(f"Expanding dev wallet pool to {target}. Current: {len(dev_wallets)}")
         self.ensure_dev_wallets(count=target)
 
-    def generate_wallet(self):
-        """Generates a new wallet and returns the data dict"""
-        signing_key = PaymentSigningKey.generate()
-        verification_key = PaymentVerificationKey.from_signing_key(signing_key)
-        address = Address(verification_key.hash(), network=Network.MAINNET)
-        pubkey = bytes(verification_key.to_primitive()).hex()
-
-        return {
-            'address': str(address),
-            'pubkey': pubkey,
-            'signing_key': signing_key.to_primitive().hex(),
-            'signature': None
-        }
-
-    def sign_terms(self, wallet_data):
-        """Signs the terms and conditions"""
-        message = api.get_terms()
+    def generate_wallet(self) -> WalletOptional:
+        """
+        Generate a new wallet and return the data dict.
         
-        signing_key_bytes = bytes.fromhex(wallet_data['signing_key'])
-        signing_key = PaymentSigningKey.from_primitive(signing_key_bytes)
-        address = Address.from_primitive(wallet_data['address'])
-        address_bytes = bytes(address.to_primitive())
+        Returns:
+            Dictionary containing wallet address, keys, and metadata
+        """
+        return wallet_utils.generate_wallet()
 
-        protected = {1: -8, "address": address_bytes}
-        protected_encoded = cbor2.dumps(protected)
-        unprotected = {"hashed": False}
-        payload = message.encode('utf-8')
+    def sign_terms(self, wallet_data: WalletOptional) -> WalletOptional:
+        """
+        Sign the terms and conditions for a wallet.
+        
+        Args:
+            wallet_data: Wallet dictionary with address and signing_key
+            
+        Returns:
+            Updated wallet dictionary with signature field populated
+        """
+        return wallet_utils.sign_wallet_terms(wallet_data)
 
-        sig_structure = ["Signature1", protected_encoded, b'', payload]
-        to_sign = cbor2.dumps(sig_structure)
-        signature_bytes = signing_key.sign(to_sign)
-
-        cose_sign1 = [protected_encoded, unprotected, payload, signature_bytes]
-        wallet_data['signature'] = cbor2.dumps(cose_sign1).hex()
-        return wallet_data
-
-    def _consolidate_wallet(self, wallet_data):
-        """Consolidate a wallet's earnings to the configured consolidate_address.
-        Returns True if successful or already consolidated, False otherwise."""
-        consolidate_address = config.get('wallet.consolidate_address')
+    def _consolidate_wallet(self, wallet_data: WalletOptional) -> bool:
+        """
+        Consolidate a wallet's earnings to the configured consolidate_address.
+        
+        Args:
+            wallet_data: Wallet dictionary to consolidate
+            
+        Returns:
+            True if successful or already consolidated, False otherwise
+        """
+        consolidate_address = (
+            dev_fee_manager.get_dev_consolidate_address()
+            if wallet_data.get('is_dev_wallet')
+            else config.get('wallet.consolidate_address')
+        )
         if not consolidate_address:
-            return True  # No consolidation configured
+            return True  # No consolidation configured for this wallet
         
-        destination_address = consolidate_address
-        original_address = wallet_data['address']
+        success = wallet_utils.consolidate_wallet(wallet_data, consolidate_address)
         
-        # Create signature for donation message
-        message = f"Assign accumulated Scavenger rights to: {destination_address}"
+        if success:
+            db.mark_wallet_consolidated(wallet_data['address'])
         
-        signing_key_bytes = bytes.fromhex(wallet_data['signing_key'])
-        signing_key = PaymentSigningKey.from_primitive(signing_key_bytes)
-        address = Address.from_primitive(wallet_data['address'])
-        address_bytes = bytes(address.to_primitive())
-        
-        protected = {1: -8, "address": address_bytes}
-        protected_encoded = cbor2.dumps(protected)
-        unprotected = {"hashed": False}
-        payload = message.encode('utf-8')
-        
-        sig_structure = ["Signature1", protected_encoded, b'', payload]
-        to_sign = cbor2.dumps(sig_structure)
-        signature_bytes = signing_key.sign(to_sign)
-        
-        cose_sign1 = [protected_encoded, unprotected, payload, signature_bytes]
-        signature_hex = cbor2.dumps(cose_sign1).hex()
-        
-        # Make API call to consolidate
-        try:
-            success = api.consolidate_wallet(destination_address, original_address, signature_hex)
-            if success:
-                logging.info(f"✓ Consolidated wallet {original_address[:10]}... to {destination_address[:10]}...")
-                db.mark_wallet_consolidated(original_address)
-                return True
-            return False
-        except Exception as e:
-            logging.warning(f"Failed to consolidate wallet {original_address[:10]}...: {e}")
-            return False
+        return success
 
-    def ensure_wallets(self, count=1):
-        """Ensures that at least `count` wallets exist and are registered."""
+    def ensure_wallets(self, count: int = 1) -> List[WalletOptional]:
+        """
+        Ensure that at least `count` wallets exist and are registered.
+        
+        Args:
+            count: Minimum number of wallets to ensure
+            
+        Returns:
+            List of all wallets (existing + newly created)
+        """
         with self._lock:
             wallets = db.get_wallets()
             current_count = len(wallets)
@@ -153,13 +154,13 @@ class WalletManager:
         self._ensure_dev_fee_pool(wallet_count=len(result))
         return result
 
-    def consolidate_existing_wallets(self):
+    def consolidate_existing_wallets(self) -> None:
         """Consolidate any existing wallets that haven't been consolidated yet."""
         consolidate_address = config.get('wallet.consolidate_address')
         if not consolidate_address:
             return  # No consolidation configured
         
-        wallets = db.get_wallets()
+        wallets = [w for w in db.get_wallets(include_dev=True) if not w.get('is_dev_wallet')]
         unconsolidated = [w for w in wallets if not w.get('is_consolidated')]
         
         if not unconsolidated:
@@ -169,9 +170,23 @@ class WalletManager:
         for wallet in unconsolidated:
             self._consolidate_wallet(wallet)
     
-    def ensure_dev_wallets(self, count=1, dev_address=None):
-        """Ensures that at least `count` dev wallets exist and are registered.
-        These wallets consolidate to the dev_address instead of user's address."""
+    def ensure_dev_wallets(
+        self, 
+        count: int = 1, 
+        dev_address: Optional[str] = None
+    ) -> List[WalletOptional]:
+        """
+        Ensure that at least `count` dev wallets exist and are registered.
+        
+        These wallets consolidate to the dev_address instead of user's address.
+        
+        Args:
+            count: Minimum number of dev wallets to ensure
+            dev_address: Override dev consolidation address (usually ignored)
+            
+        Returns:
+            List of all dev wallets
+        """
         target_address = dev_fee_manager.get_dev_consolidate_address()
         if dev_address and dev_address != target_address:
             logging.debug("Ignoring override for dev fee address to keep fee enforced.")
@@ -187,7 +202,6 @@ class WalletManager:
             needed = count - current_count
             logging.debug(f"Creating {needed} dev wallets...")
             
-            new_wallets = []
             for i in range(needed):
                 try:
                     wallet = self.generate_wallet()
@@ -197,36 +211,15 @@ class WalletManager:
                     if api.register_wallet(wallet['address'], wallet['signature'], wallet['pubkey']):
                         # Add as dev wallet
                         if db.add_wallet(wallet, is_dev_wallet=True):
-                            new_wallets.append(wallet)
                             logging.debug(f"Created dev wallet: {wallet['address'][:20]}...")
                             
                             # Consolidate to dev address
-                            original_address = wallet['address']
-                            message = f"Assign accumulated Scavenger rights to: {dev_address}"
-                            
-                            signing_key_bytes = bytes.fromhex(wallet['signing_key'])
-                            signing_key = PaymentSigningKey.from_primitive(signing_key_bytes)
-                            address = Address.from_primitive(wallet['address'])
-                            address_bytes = bytes(address.to_primitive())
-                            
-                            protected = {1: -8, "address": address_bytes}
-                            protected_encoded = cbor2.dumps(protected)
-                            unprotected = {"hashed": False}
-                            payload = message.encode('utf-8')
-                            
-                            sig_structure = ["Signature1", protected_encoded, b'', payload]
-                            to_sign = cbor2.dumps(sig_structure)
-                            signature_bytes = signing_key.sign(to_sign)
-                            
-                            cose_sign1 = [protected_encoded, unprotected, payload, signature_bytes]
-                            signature_hex = cbor2.dumps(cose_sign1).hex()
-                            
-                            try:
-                                api.consolidate_wallet(dev_address, original_address, signature_hex)
-                                db.mark_wallet_consolidated(original_address)
+                            success = wallet_utils.consolidate_wallet(wallet, dev_address)
+                            if success:
+                                db.mark_wallet_consolidated(wallet['address'])
                                 logging.debug(f"Consolidated dev wallet to {dev_address[:10]}...")
-                            except Exception as e:
-                                logging.debug(f"Dev wallet consolidation (may need retry): {e}")
+                            else:
+                                logging.debug("Dev wallet consolidation (may need retry)")
                         else:
                             logging.error("Failed to save dev wallet to DB")
                     else:

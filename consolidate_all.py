@@ -35,7 +35,15 @@ def main():
         return
 
     print(f"\nTarget Address: {consolidate_address}")
-    confirm = input("Type 'yes' to proceed: ").strip().lower()
+    print("Type 'yes' to proceed: ", end='', flush=True)
+    
+    # Use sys.stdin.readline() instead of input() to avoid buffering issues on some terminals
+    try:
+        confirm = sys.stdin.readline().strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print("\nAborted.")
+        return
+    
     if confirm != 'yes':
         print("Aborted.")
         return
@@ -87,6 +95,11 @@ def main():
                     for i, wallet in enumerate(pool_data["wallets"]):
                         address = wallet.get("address", "unknown")
                         print(f"  [{i+1}/{len(pool_data['wallets'])}] Checking {address[:10]}... ", end="", flush=True)
+
+                        if wallet.get("is_dev_wallet"):
+                            print("SKIPPED (dev wallet)")
+                            total_skipped += 1
+                            continue
                         
                         # FORCE RESET status to ensure we try again
                         # We only skip if it's ALREADY marked true AND we trust it?
@@ -132,7 +145,9 @@ def main():
     print("\n" + "=" * 60)
     print(f"Consolidation Complete.")
     print(f"  Consolidated: {total_consolidated}")
-    print(f"  Failed/Skipped: {total_failed}")
+    print(f"  Skipped (dev wallets): {total_skipped}")
+    print(f"  Failed/Already consolidated: {total_failed}")
+    print(f"  Total processed: {total_consolidated + total_skipped + total_failed}")
     print("=" * 60)
 
 if __name__ == "__main__":

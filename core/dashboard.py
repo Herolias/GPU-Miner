@@ -33,9 +33,11 @@ class Dashboard:
         # Console setup
         os.system('color') # Enable ANSI on Windows
 
-    def update_stats(self, hashrate, session_sol, all_time_sol, wallet_sols, active_wallets, challenge, difficulty):
+    def update_stats(self, hashrate, cpu_hashrate, gpu_hashrate, session_sol, all_time_sol, wallet_sols, active_wallets, challenge, difficulty):
         with self.lock:
             self.total_hashrate = hashrate
+            self.cpu_hashrate = cpu_hashrate
+            self.gpu_hashrate = gpu_hashrate
             self.session_solutions = session_sol
             self.all_time_solutions = all_time_sol
             self.wallet_solutions = wallet_sols
@@ -117,7 +119,19 @@ class Dashboard:
                 hr_str = f"{self.total_hashrate / 1_000:.2f} KH/s"
             else:
                 hr_str = f"{self.total_hashrate / 1_000_000:.2f} MH/s"
-            print(f"  Total Hashrate:    {CYAN}{hr_str}{RESET}")
+                
+            # CPU/GPU Breakdown
+            if self.cpu_hashrate < 1_000_000:
+                cpu_hr_str = f"{self.cpu_hashrate / 1_000:.2f} KH/s"
+            else:
+                cpu_hr_str = f"{self.cpu_hashrate / 1_000_000:.2f} MH/s"
+                
+            if self.gpu_hashrate < 1_000_000:
+                gpu_hr_str = f"{self.gpu_hashrate / 1_000:.2f} KH/s"
+            else:
+                gpu_hr_str = f"{self.gpu_hashrate / 1_000_000:.2f} MH/s"
+
+            print(f"  Total Hashrate:    {CYAN}{hr_str}{RESET} (CPU: {cpu_hr_str} | GPU: {gpu_hr_str})")
             
             # Solutions
             print(f"\n{BOLD}Solutions:{RESET}")

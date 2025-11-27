@@ -2,18 +2,42 @@ import sys
 import platform
 import logging
 from pathlib import Path
+from typing import Optional, Any
+
+from .constants import DEFAULT_ROM_SIZE, DEFAULT_ROM_SEGMENT_SIZE, DEFAULT_ROM_BUILD_THREADS
+from .exceptions import ROMLibraryError, ROMBuildError
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-class ROMHandler:
-    def __init__(self):
-        self.ashmaize = self._load_library()
 
-    def _load_library(self):
-        """Loads the platform-specific ashmaize_py library."""
+class ROMHandler:
+    """
+    Handles loading the ashmaize_py library and building ROMs.
+    
+    The ashmaize library is platform-specific and must be loaded from
+    the appropriate libs directory based on the current OS and architecture.
+    """
+    
+    def __init__(self) -> None:
+        """Initialize ROMHandler and load platform-specific library."""
+        self.ashmaize: Optional[Any] = self._load_library()
+
+    def _load_library(self) -> Optional[Any]:
+        """
+        Load the platform-specific ashmaize_py library.
+        
+        Returns:
+            The loaded ashmaize_py module, or None if loading fails
+            
+        Raises:
+            ROMLibraryError: If platform is unsupported or library cannot be loaded
+        """
         system = platform.system().lower()
         machine = platform.machine().lower()
+        
+        logging.info(f"Detected platform: {system} {machine}")
 
+        # Normalize architecture names
         if machine in ['x86_64', 'amd64', 'x64']:
             arch = 'x64'
         elif machine in ['aarch64', 'arm64', 'armv8']:
@@ -31,13 +55,17 @@ class ROMHandler:
 
         key = (system, arch)
         if key not in platform_map:
-            logging.error(f"Unsupported platform: {system} {arch}")
-            return None
+            error_msg = f"Unsupported platform: {system} {arch}"
+            logging.error(error_msg)
+            logging.error(f"Supported platforms: {', '.join(f'{s}/{a}' for s, a in platform_map.keys())}")
+            raise ROMLibraryError(error_msg)
 
         lib_dir = BASE_DIR / 'libs' / platform_map[key]
         if not lib_dir.exists():
-            logging.error(f"ashmaize library directory missing: {lib_dir}")
-            return None
+            error_msg = f"ashmaize library directory missing: {lib_dir}"
+            logging.error(error_msg)
+            logging.error("Please ensure the ashmaize library is installed for your platform")
+            raise ROMLibraryError(error_msg)
 
         lib_dir_str = str(lib_dir)
         if lib_dir_str not in sys.path:
@@ -45,29 +73,78 @@ class ROMHandler:
 
         try:
             import ashmaize_py
-            logging.info(f"Loaded ashmaize_py from {lib_dir}")
+            logging.info(f"Successfully loaded ashmaize_py from {lib_dir}")
             return ashmaize_py
         except ImportError as e:
-            logging.error(f"Failed to load ashmaize_py: {e}")
-            return None
+            error_msg = f"Failed to import ashmaize_py: {e}"
+            logging.error(error_msg)
+            logging.error("Check that the library files are not corrupted")
+            raise ROMLibraryError(error_msg) from e
 
-    def build_rom(self, rom_key):
-        """Builds the ROM for a given key (challenge['no_pre_mine'])."""
+    def build_rom(
+        self,
+        rom_key: str,
+        size: int = DEFAULT_ROM_SIZE,
+        segment_size: int = DEFAULT_ROM_SEGMENT_SIZE,
+        threads: int = DEFAULT_ROM_BUILD_THREADS
+    ) -> Any:
+        """
+        Build ROM for a given key.
+        
+        Args:
+            rom_key: The ROM key from challenge data (challenge['no_pre_mine'])
+            size: ROM size in bytes (default: 1GB)
+            segment_size: ROM segment size in bytes (default: 16MB)
+            threads: Number of threads to use for building (default: 4)
+            
+        Returns:
+            Built ROM object
+            
+        Raises:
+            ROMLibraryError: If ashmaize library is not loaded
+            ROMBuildError: If ROM building fails
+        """
         if not self.ashmaize:
-            logging.error("Ashmaize library not loaded")
-            return None
+            raise ROMLibraryError("Ashmaize library not loaded")
 
         try:
-            # Constants from reference implementation
-            # Size: 1GB (1073741824)
-            # Segment: 16MB (16777216)
-            # Threads: 4
-            logging.info(f"Building ROM {rom_key[:10]}... (this may take a few seconds)")
-            rom = self.ashmaize.build_rom_twostep(rom_key, 1073741824, 16777216, 4)
+            logging.info(
+                f"Building ROM {rom_key[:10]}... "
+                f"(size={size//1024//1024}MB, segments={segment_size//1024//1024}MB, threads={threads})"
+            )
+            rom = self.ashmaize.build_rom_twostep(rom_key, size, segment_size, threads)
+            logging.info(f"ROM {rom_key[:10]}... built successfully")
             return rom
         except Exception as e:
-            logging.error(f"Error building ROM: {e}")
-            return None
+            error_msg = f"Error building ROM: {e}"
+            logging.error(error_msg)
+            raise ROMBuildError(rom_key, str(e)) from e
 
-# Global instance
-rom_handler = ROMHandler()
+
+# Global instance - lazy initialization
+_rom_handler_instance: Optional[ROMHandler] = None
+_rom_handler_lock = None
+
+def get_rom_handler() -> ROMHandler:
+    """
+    Get or create the global ROMHandler instance.
+    Uses lazy initialization to avoid loading the library during module import.
+    This is critical for multiprocessing on Windows (spawn mode).
+    """
+    global _rom_handler_instance, _rom_handler_lock
+    
+    if _rom_handler_instance is None:
+        # Import threading here to avoid issues during multiprocessing spawn
+        import threading
+        if _rom_handler_lock is None:
+            _rom_handler_lock = threading.Lock()
+        
+        with _rom_handler_lock:
+            # Double-check pattern
+            if _rom_handler_instance is None:
+                _rom_handler_instance = ROMHandler()
+    
+    return _rom_handler_instance
+
+# Legacy compatibility - for direct attribute access
+rom_handler = None  # Will be None until get_rom_handler() is called

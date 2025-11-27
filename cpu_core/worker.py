@@ -1,0 +1,174 @@
+import multiprocessing as mp
+import time
+import logging
+import queue
+import traceback
+import sys
+import os
+from pathlib import Path
+
+# Add parent directory to path to find modules
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from core.constants import CPU_MINING_BATCH_SIZE
+# ROM handler will be imported lazily in run() to avoid multiprocessing issues
+
+class CPUWorker(mp.Process):
+    def __init__(self, worker_id, request_queue, response_queue):
+        super().__init__()
+        self.worker_id = worker_id
+        self.request_queue = request_queue
+        self.response_queue = response_queue
+        self.shutdown_event = mp.Event()
+        self.logger = None
+        self.ashmaize = None
+
+    def run(self):
+        # Setup logging in this process
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format=f'%(asctime)s - CPU-{self.worker_id} - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(f'cpu_worker_{self.worker_id}')
+        self.logger.info(f"CPU Worker {self.worker_id} started")
+
+        try:
+            # Lazy load ROM handler to avoid import-time library loading
+            # This prevents multiprocessing spawn issues on Windows
+            from core.rom_handler import get_rom_handler
+            rom_handler = get_rom_handler()
+            
+            # Load library
+            self.ashmaize = rom_handler.ashmaize
+            if not self.ashmaize:
+                raise Exception("Failed to load ashmaize library in worker")
+
+            self._main_loop()
+        except Exception as e:
+            self.logger.critical(f"CPU Worker crashed: {e}")
+            traceback.print_exc()
+        finally:
+            self.logger.info("CPU Worker shutting down")
+
+    def _main_loop(self):
+        self.logger.info("CPU Worker main loop started")
+        
+        # Cache ROMs in memory for this worker
+        # Key -> ROM Object (PyRom)
+        rom_cache = {}
+
+        while not self.shutdown_event.is_set():
+            try:
+                req = self.request_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            if req.get('type') == 'shutdown':
+                self.logger.info("Shutdown request received")
+                self.shutdown_event.set()
+                break
+            
+            if req.get('type') == 'mine':
+                self._execute_mine(req, rom_cache)
+
+    def _execute_mine(self, req, rom_cache):
+        try:
+            rom_key = req['rom_key']
+            
+            # 1. Load/Build ROM
+            if rom_key not in rom_cache:
+                self.logger.info(f"Building ROM {rom_key[:8]}...")
+                # Using 1GB size as requested
+                # Signature: key, size, pre_size, mixing_numbers
+                # Reference uses mixing_numbers=4
+                rom_obj = self.ashmaize.build_rom_twostep(rom_key, 1073741824, 16777216, 4)
+                if not rom_obj:
+                    raise Exception("Failed to build ROM")
+                rom_cache[rom_key] = rom_obj
+                self.logger.info(f"ROM built for {rom_key[:8]}")
+
+            rom_obj = rom_cache[rom_key]
+
+            # 2. Prepare Args
+            salt_prefix = req['salt_prefix'] # bytes
+            target_difficulty = req['difficulty'] # int
+            start_nonce = req['start_nonce'] # int
+            request_id = req['id']
+            
+            # hash_with_params is a method of PyRom object
+            # It expects a string for the preimage (salt_prefix)
+            salt_prefix_str = salt_prefix.decode('utf-8') if isinstance(salt_prefix, bytes) else salt_prefix
+            
+            # Mining Loop
+            # We must loop in Python because hash_with_params only does one hash
+            # Signature: hash_with_params(preimage, nb_loops, nb_instrs)
+            # Preimage: nonce_hex + salt_prefix
+            
+            # Batch size for reporting/checking
+            # Reduced from 2000 to 50 for faster feedback during testing
+            # Batch size for reporting/checking
+            # Increased to 5000 to improve CPU utilization and reduce overhead
+            loop_batch = 5000
+            
+            start_time = time.time()
+            
+            # Log before starting to confirm we reach the mining loop
+            #self.logger.info(f"CPU Worker {self.worker_id}: Starting batch of {loop_batch} hashes, start_nonce={start_nonce}")
+            
+            for i in range(loop_batch):
+                if self.shutdown_event.is_set():
+                    break
+                    
+                current_nonce = (start_nonce + i) & 0xFFFFFFFFFFFFFFFF
+                nonce_hex = f"{current_nonce:016x}"
+                
+                # Construct full preimage
+                preimage_str = nonce_hex + salt_prefix_str
+                
+                # Execute Hash
+                # nb_loops=8, nb_instrs=256 (defaults from reference)
+                # Returns HEX STRING, not bytes
+                digest_hex = rom_obj.hash_with_params(preimage_str, 8, 256)
+                
+                # Check Difficulty
+                # Digest is hex string. Convert to bytes or parse int directly.
+                # First 4 bytes = first 8 hex chars.
+                # head <= target
+                
+                # Optimization: Parse directly from hex
+                # Parse first 32 bits (8 hex chars) to match reference implementation
+                digest_int = int(digest_hex[:8], 16)
+                
+
+
+                if digest_int <= target_difficulty:
+                    self.logger.info(f"CPU Found Solution! Nonce={current_nonce}, Hex={digest_hex}, Int={digest_int}, Target={target_difficulty}")
+                    self.response_queue.put({
+                        'request_id': request_id,
+                        'found': True,
+                        'nonce': current_nonce,
+                        'hash': digest_hex,
+                        'hashes': i + 1,
+                        'duration': time.time() - start_time
+                    })
+                    return
+
+            actual_hashes = loop_batch
+            
+            # If loop finishes without finding a solution
+            self.response_queue.put({
+                'request_id': request_id,
+                'found': False,
+                'nonce': None,
+                'hash': None,
+                'hashes': actual_hashes,
+                'duration': time.time() - start_time
+            })
+
+        except Exception as e:
+            self.logger.error(f"Mining error on CPU {self.worker_id}: {e}")
+            traceback.print_exc()
+            self.response_queue.put({
+                'request_id': req['id'],
+                'error': str(e)
+            })
