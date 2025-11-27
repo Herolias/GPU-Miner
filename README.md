@@ -87,7 +87,7 @@ python main.py
 ```
 
 ### GPU + CPU Mining
-The newest version of the miner supports GPU + CPU mining. To enable it, use 
+The newest version of the miner supports GPU + CPU mining. To enable it make sure to update to version 0.1.0 and use 
 ```bash
 python main.py --cpu --workers x
 ```
