@@ -203,36 +203,37 @@ class Dashboard:
             buffer.append(f"{CYAN}" + "="*60 + f"{RESET}")
             
             # System Stats
+            system_items = []
+            
+            # CPU
             cpu_str = f"CPU: {self.sys_mon.cpu_load:>4.1f}%"
             if self.sys_mon.cpu_temp > 0:
                 cpu_str += f" ({self.sys_mon.cpu_temp:.0f}°C)"
+            system_items.append(cpu_str)
             
-            # Multi-line GPU Stats
-            gpu_lines = []
+            # GPUs
             if self.sys_mon.gpus:
-                GPUS_PER_LINE = 3
-                current_line = []
-                for i, gpu in enumerate(self.sys_mon.gpus):
+                for gpu in self.sys_mon.gpus:
                     g_str = f"GPU{gpu['id']}: {gpu['load']:>3.0f}%"
                     if gpu['temp'] > 0:
                         g_str += f" ({gpu['temp']:.0f}°C)"
-                    current_line.append(g_str)
-                    
-                    if len(current_line) >= GPUS_PER_LINE:
-                        gpu_lines.append(" | ".join(current_line))
-                        current_line = []
-                
-                if current_line:
-                    gpu_lines.append(" | ".join(current_line))
+                    system_items.append(g_str)
             else:
-                gpu_lines.append("GPU: N/A")
+                system_items.append("GPU: N/A")
 
-            # Combine CPU and first line of GPU
-            buffer.append(f"{BOLD}System:{RESET} {cpu_str} | {gpu_lines[0]}")
+            # Render in chunks of 3
+            ELEMENTS_PER_LINE = 3
+            chunks = [system_items[i:i + ELEMENTS_PER_LINE] for i in range(0, len(system_items), ELEMENTS_PER_LINE)]
             
-            # Print remaining GPU lines indented
-            for line in gpu_lines[1:]:
-                buffer.append(f"        {line}") # Align with where GPU starts roughly
+            if chunks:
+                # First line
+                buffer.append(f"{BOLD}System:{RESET} {' | '.join(chunks[0])}")
+                
+                # Subsequent lines
+                for chunk in chunks[1:]:
+                    buffer.append(f"        {' | '.join(chunk)}") # Align with where stats start
+            else:
+                buffer.append(f"{BOLD}System:{RESET} N/A")
                 
             buffer.append(f"{CYAN}" + "-"*60 + f"{RESET}")
 
