@@ -95,10 +95,12 @@ class MiningCoordinator:
             return None
         
         # MULTI-CHALLENGE: Select optimal challenge for this specific wallet
+        # PERFORMANCE FIX: Pass wallet's solved_challenges directly to avoid file I/O
         challenge = self.select_challenge_for_wallet(
             wallet['address'],
             available_challenges,
-            cached_rom_keys or set()
+            cached_rom_keys or set(),
+            wallet.get('solved_challenges', [])  # Pass directly from wallet object
         )
         
         if not challenge:
@@ -162,7 +164,8 @@ class MiningCoordinator:
         self,
         wallet_address: str,
         available_challenges: list[Challenge],
-        cached_rom_keys: set[str]
+        cached_rom_keys: set[str],
+        solved_challenges: list[str]
     ) -> Optional[Challenge]:
         """
         Select best challenge for wallet using prioritization strategy.
@@ -176,6 +179,7 @@ class MiningCoordinator:
             wallet_address: Wallet to select challenge for
             available_challenges: List of valid challenges
             cached_rom_keys: Set of ROM keys currently in GPU cache
+            solved_challenges: List of challenge IDs wallet has solved
             
         Returns:
             Selected challenge or None if no suitable challenge found
@@ -183,10 +187,11 @@ class MiningCoordinator:
         if not available_challenges:
             return None
         
+        # PERFORMANCE FIX: Use passed solved_challenges instead of checking pool files
         # Filter: wallet hasn't solved this challenge
         unsolved = [
             c for c in available_challenges
-            if not self._has_wallet_solved(wallet_address, c['challenge_id'])
+            if c['challenge_id'] not in solved_challenges
         ]
         
         if not unsolved:
@@ -206,34 +211,6 @@ class MiningCoordinator:
         selected = unsolved[0]
         logging.debug(f"Selected challenge {selected['challenge_id'][:8]}... (difficulty: {selected['difficulty'][:10]}...)")
         return selected
-    
-    def _has_wallet_solved(self, wallet_address: str, challenge_id: str) -> bool:
-        """
-        Check if a wallet has solved a specific challenge.
-        
-        Args:
-            wallet_address: Wallet address to check
-            challenge_id: Challenge ID to check
-            
-        Returns:
-            True if wallet has solved this challenge
-        """
-        from .wallet_pool import wallet_pool
-        
-        # Check all pools for this wallet
-        # Note: This is a simplified check - in production you'd track all pools
-        for pool_id in [0, 1, 2, 3, "cpu"]:
-            try:
-                wallet = wallet_pool.get_wallet(pool_id, wallet_address)
-                if wallet:
-                    solved = wallet.get('solved_challenges', [])
-                    if challenge_id in solved:
-                        return True
-            except:
-                # Pool doesn't exist or other error, skip
-                pass
-        
-        return False
     
     def _select_wallet_only(
         self,
