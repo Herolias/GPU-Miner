@@ -20,8 +20,7 @@ class SystemMonitor:
     def __init__(self):
         self.cpu_load = 0.0
         self.cpu_temp = 0.0
-        self.gpu_load = 0.0
-        self.gpu_temp = 0.0
+        self.gpus = [] # List of dicts: [{'id': 0, 'load': 0.0, 'temp': 0.0}, ...]
         self.last_update = 0
         self.update_interval = 2.0  # Update every 2 seconds
 
@@ -36,8 +35,6 @@ class SystemMonitor:
         try:
             self.cpu_load = psutil.cpu_percent(interval=None)
             # CPU Temp (Linux specific usually, but try psutil sensors)
-            # Windows usually doesn't expose CPU temp via psutil easily without admin or specific hardware support
-            # We'll skip CPU temp for Windows for now or try a generic approach if available
             temps = psutil.sensors_temperatures() if hasattr(psutil, "sensors_temperatures") else {}
             if 'coretemp' in temps:
                 self.cpu_temp = temps['coretemp'][0].current
@@ -54,27 +51,41 @@ class SystemMonitor:
             cmd = ['nvidia-smi', '--query-gpu=utilization.gpu,temperature.gpu', '--format=csv,noheader,nounits']
             # Use specific encoding and error handling
             output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=1).decode('utf-8').strip()
+            
+            new_gpus = []
             if output:
-                # Handle multiple GPUs - just take average or first?
-                # Let's show the first one or average. For dashboard simplicity, let's show Max or Avg.
-                # If multiple lines, parse them.
                 lines = output.split('\n')
-                loads = []
-                temps = []
-                for line in lines:
+                for i, line in enumerate(lines):
                     try:
                         l, t = line.split(',')
-                        loads.append(float(l.strip()))
-                        temps.append(float(t.strip()))
+                        new_gpus.append({
+                            'id': i,
+                            'load': float(l.strip()),
+                            'temp': float(t.strip())
+                        })
                     except:
                         pass
-                
-                if loads:
-                    self.gpu_load = sum(loads) / len(loads)
-                    self.gpu_temp = max(temps) # Show max temp for safety
+            
+            self.gpus = new_gpus
+            
         except Exception:
-            self.gpu_load = 0.0
-            self.gpu_temp = 0.0
+            self.gpus = []
+
+import logging
+
+class DashboardLogHandler(logging.Handler):
+    def __init__(self, dashboard_instance):
+        super().__init__()
+        self.dashboard = dashboard_instance
+        self.setLevel(logging.WARNING) # Only capture WARNING and ERROR
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.dashboard.register_error(timestamp, msg, record.levelno)
+        except Exception:
+            self.handleError(record)
 
 class Dashboard:
     def __init__(self):
@@ -95,11 +106,28 @@ class Dashboard:
         self._spinner_frames = ['|', '/', '-', '\\']
         self._spinner_index = 0
         
+        # Status Tracking
+        self.last_error = None # (timestamp, message, level)
+        self.last_solution = None # (timestamp, challenge_id)
+        
         # System Monitor
         self.sys_mon = SystemMonitor()
 
         # Console setup
         os.system('color') # Enable ANSI on Windows
+
+    def register_error(self, timestamp, message, level):
+        with self.lock:
+            self.last_error = (timestamp, message, level)
+
+    def register_solution(self, challenge_id):
+        with self.lock:
+            self.last_solution = (datetime.now().strftime("%H:%M:%S"), challenge_id)
+            # Clear error if we found a solution? Maybe not, user wants to see last error.
+            # But if the error was transient and we are mining now, maybe we should?
+            # User request: "If there never was an error or warning, show when the last solution was found"
+            # This implies priority: Error > Solution.
+            pass
 
     def update_stats(self, hashrate, cpu_hashrate, gpu_hashrate, session_sol, all_time_sol, wallet_sols, active_wallets, challenge, difficulty):
         with self.lock:
@@ -179,11 +207,18 @@ class Dashboard:
             if self.sys_mon.cpu_temp > 0:
                 cpu_str += f" ({self.sys_mon.cpu_temp:.0f}°C)"
             
-            gpu_str = f"GPU: {self.sys_mon.gpu_load:>4.1f}%"
-            if self.sys_mon.gpu_temp > 0:
-                gpu_str += f" ({self.sys_mon.gpu_temp:.0f}°C)"
-                
-            print(f"{BOLD}System:{RESET} {cpu_str} | {gpu_str}")
+            gpu_strs = []
+            if self.sys_mon.gpus:
+                for gpu in self.sys_mon.gpus:
+                    g_str = f"GPU{gpu['id']}: {gpu['load']:>3.0f}%"
+                    if gpu['temp'] > 0:
+                        g_str += f" ({gpu['temp']:.0f}°C)"
+                    gpu_strs.append(g_str)
+                gpu_line = " | ".join(gpu_strs)
+            else:
+                gpu_line = "GPU: N/A"
+
+            print(f"{BOLD}System:{RESET} {cpu_str} | {gpu_line}")
             print(f"{CYAN}" + "-"*60 + f"{RESET}")
 
             # Main Stats
@@ -235,6 +270,21 @@ class Dashboard:
                 print(f"{BOLD}Consolidation:{RESET} {consolidation_addr[:10]}...{consolidation_addr[-4:]}")
             else:
                 print(f"{YELLOW}{BOLD}NOTE:{RESET} No consolidation address set. Edit config.yaml to set one.")
+            
+            # Status Section
+            print(f"{CYAN}" + "="*60 + f"{RESET}")
+            if self.last_error:
+                ts, msg, level = self.last_error
+                color = RED if level >= logging.ERROR else YELLOW
+                # Truncate message if too long
+                if len(msg) > 50:
+                    msg = msg[:47] + "..."
+                print(f"{color}{BOLD}Last Issue:{RESET} [{ts}] {msg}")
+            elif self.last_solution:
+                ts, challenge_id = self.last_solution
+                print(f"{GREEN}{BOLD}Last Solution:{RESET} [{ts}] for Challenge {challenge_id}")
+            else:
+                print(f"{GREEN}Status: Running{RESET}")
             
             print(f"{CYAN}" + "="*60 + f"{RESET}")
             print("\nPress Ctrl+C to stop.")

@@ -88,6 +88,12 @@ class MinerManager:
         # Start Dashboard Thread early so loading screen can show
         self.dashboard_thread = threading.Thread(target=self._update_dashboard_loop, daemon=True)
         self.dashboard_thread.start()
+        
+        # Add Dashboard Log Handler
+        from .dashboard import DashboardLogHandler
+        root_logger = logging.getLogger()
+        handler = DashboardLogHandler(dashboard)
+        root_logger.addHandler(handler)
 
         gpu_enabled = config.get("gpu.enabled")
 
@@ -115,6 +121,26 @@ class MinerManager:
         
         self.poll_thread = threading.Thread(target=self._poll_challenge_loop, daemon=True)
         self.poll_thread.start()
+
+    # ... (skipping unchanged methods) ...
+
+    def _on_retry_success(
+        self,
+        wallet_addr: str,
+        challenge_id: str,
+        nonce: str,
+        is_dev: bool
+    ) -> None:
+        """Callback for successful retry."""
+        if is_dev:
+            self.response_processor.dev_session_solutions += 1
+        else:
+            self.response_processor.session_solutions += 1
+            if wallet_addr in self.response_processor.wallet_session_solutions:
+                self.response_processor.wallet_session_solutions[wallet_addr] += 1
+        
+        # Update dashboard status
+        dashboard.register_solution(challenge_id)
     
     def _start_gpu_engines(self) -> None:
         """Start GPU mining engines."""
@@ -520,6 +546,9 @@ class MinerManager:
             self.response_processor.session_solutions += 1
             if wallet_addr in self.response_processor.wallet_session_solutions:
                 self.response_processor.wallet_session_solutions[wallet_addr] += 1
+        
+        # Update dashboard status
+        dashboard.register_solution(challenge_id)
     
     def _on_retry_fatal(
         self,

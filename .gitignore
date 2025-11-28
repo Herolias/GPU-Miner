@@ -69,3 +69,5 @@ gpu_core/.cuda_cache/
 !gpu_core/bin/**/README.md
 !libs/**
 
+verify_dashboard.py
+
