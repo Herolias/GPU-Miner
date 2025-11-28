@@ -110,15 +110,10 @@ class MiningCoordinator:
             return None
         
         # Update wallet with the actual challenge
-        # For sticky wallets, use reuse_wallet; for new allocations, update directly
-        if sticky_address and wallet['address'] == sticky_address:
-            # Sticky wallet - update its challenge
-            wallet_pool.reuse_wallet(pool_id, wallet['address'], challenge['challenge_id'])
-            wallet['current_challenge'] = challenge['challenge_id']
-        else:
-            # New allocation - update challenge info
-            wallet['current_challenge'] = challenge['challenge_id']
-            # Note: wallet is already marked in_use by allocate_wallet or manually above
+        # CRITICAL: Use reuse_wallet to persist state changes to disk
+        # Without this, other workers reload pool and steal the wallet!
+        wallet_pool.reuse_wallet(pool_id, wallet['address'], challenge['challenge_id'])
+        wallet['current_challenge'] = challenge['challenge_id']  # Update in-memory too
             
         # Update sticky tracking if this is a CPU worker
         if worker_type == 'cpu' and not is_dev:
@@ -255,18 +250,17 @@ class MiningCoordinator:
                 sticky_address[:8],
                 worker_id
             )
-            wallet = wallet_pool.get_wallet(pool_id, sticky_address)
-            if wallet:
-                # FIX: Just return the sticky wallet directly
-                # We'll update it with the actual challenge after challenge selection
-                if not wallet.get('in_use'):
-                    # Mark as in use temporarily (will be updated with real challenge later)
-                    wallet['in_use'] = True
-                    return (wallet, False)
-                else:
-                    logging.debug(f"Sticky wallet {sticky_address[:8]} is in use, will try to get another")
+            # CRITICAL FIX: Use allocate_wallet to properly mark wallet in use and persist to disk
+            # get_wallet + manual in_use modification doesn't save to file!
+            wallet = wallet_pool.allocate_wallet(pool_id, "any", require_dev=False)
+            if wallet and wallet['address'] == sticky_address:
+                return (wallet, False)
+            elif wallet:
+                # Got a different wallet, release it and try fresh allocation below
+                wallet_pool.release_wallet(pool_id, wallet['address'])
+                logging.debug(f"Sticky wallet {sticky_address[:8]} in use, will try to get another")  
             else:
-                logging.warning(f"Sticky wallet {sticky_address[:8]} not found in pool")
+                logging.warning(f"Sticky wallet {sticky_address[:8]} not available")
         
         # Try to allocate any available user wallet
         wallet = wallet_pool.allocate_wallet(pool_id, "any", require_dev=False)
