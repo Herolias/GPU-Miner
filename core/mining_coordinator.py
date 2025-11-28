@@ -49,9 +49,10 @@ class MiningCoordinator:
         self,
         worker_type: WorkerType,
         worker_id: int,
-        challenge: Challenge,
+        available_challenges: list[Challenge],
         req_id: int,
-        use_dev_wallet: bool = False
+        use_dev_wallet: bool = False,
+        cached_rom_keys: Optional[set[str]] = None
     ) -> Optional[tuple[WalletOptional, str, bool]]:
         """
         Dispatch a mining job to a worker.
@@ -59,9 +60,10 @@ class MiningCoordinator:
         Args:
             worker_type: 'gpu' or 'cpu'
             worker_id: Worker ID number
-            challenge: Challenge to mine
+            available_challenges: List of valid challenges to choose from
             req_id: Request ID for tracking
             use_dev_wallet: Whether to use a dev wallet for this job
+            cached_rom_keys: Set of ROM keys currently cached in GPU memory
             
         Returns:
             Tuple of (wallet, challenge_id, is_dev_solution) if job dispatched,
@@ -82,15 +84,27 @@ class MiningCoordinator:
                 self.cpu_pending_dev_fee[worker_id] = True
                 desired_dev_wallet = False
             
-        # Select wallet
-        wallet, is_dev = self._select_wallet(
+        # Select wallet first (without challenge assignment yet)
+        wallet, is_dev = self._select_wallet_only(
             pool_id,
-            challenge,
             desired_dev_wallet,
             sticky_address,
             worker_id
         )
         if not wallet:
+            return None
+        
+        # MULTI-CHALLENGE: Select optimal challenge for this specific wallet
+        challenge = self.select_challenge_for_wallet(
+            wallet['address'],
+            available_challenges,
+            cached_rom_keys or set()
+        )
+        
+        if not challenge:
+            logging.debug(f"No available challenge for wallet {wallet['address'][:8]}")
+            # Release wallet since we can't use it
+            wallet_pool.release_wallet(pool_id, wallet['address'])
             return None
             
         # Update sticky tracking if this is a CPU worker
@@ -124,7 +138,144 @@ class MiningCoordinator:
         if queue:
             queue.put(request)
         
+        # Track ROM usage for cache optimization
+        if not hasattr(self, 'recent_rom_keys'):
+            self.recent_rom_keys = set()
+        self.recent_rom_keys.add(challenge['no_pre_mine'])
+        if len(self.recent_rom_keys) > 10:  # Keep last 10
+            self.recent_rom_keys = set(list(self.recent_rom_keys)[-10:])
+        
         return (wallet, challenge['challenge_id'], is_dev)
+    
+    def select_challenge_for_wallet(
+        self,
+        wallet_address: str,
+        available_challenges: list[Challenge],
+        cached_rom_keys: set[str]
+    ) -> Optional[Challenge]:
+        """
+        Select best challenge for wallet using prioritization strategy.
+        
+        Strategy:
+        1. Filter out challenges wallet has already solved
+        2. Sort by difficulty (lowest first)
+        3. Prefer challenges with cached ROMs for GPU efficiency
+        
+        Args:
+            wallet_address: Wallet to select challenge for
+            available_challenges: List of valid challenges
+            cached_rom_keys: Set of ROM keys currently in GPU cache
+            
+        Returns:
+            Selected challenge or None if no suitable challenge found
+        """
+        if not available_challenges:
+            return None
+        
+        # Filter: wallet hasn't solved this challenge
+        unsolved = [
+            c for c in available_challenges
+            if not self._has_wallet_solved(wallet_address, c['challenge_id'])
+        ]
+        
+        if not unsolved:
+            return None
+        
+        # Sort by difficulty (ascending - lowest first)
+        unsolved.sort(key=lambda c: int(c['difficulty'], 16))
+        
+        # Optimize: prefer challenges with cached ROMs
+        cached_challenges = [c for c in unsolved if c['no_pre_mine'] in cached_rom_keys]
+        if cached_challenges:
+            selected = cached_challenges[0]
+            logging.debug(f"Selected cached ROM challenge {selected['challenge_id'][:8]}...")
+            return selected
+        
+        # Otherwise return lowest difficulty
+        selected = unsolved[0]
+        logging.debug(f"Selected challenge {selected['challenge_id'][:8]}... (difficulty: {selected['difficulty'][:10]}...)")
+        return selected
+    
+    def _has_wallet_solved(self, wallet_address: str, challenge_id: str) -> bool:
+        """
+        Check if a wallet has solved a specific challenge.
+        
+        Args:
+            wallet_address: Wallet address to check
+            challenge_id: Challenge ID to check
+            
+        Returns:
+            True if wallet has solved this challenge
+        """
+        from .wallet_pool import wallet_pool
+        
+        # Check all pools for this wallet
+        # Note: This is a simplified check - in production you'd track all pools
+        for pool_id in [0, 1, 2, 3, "cpu"]:
+            try:
+                wallet = wallet_pool.get_wallet(pool_id, wallet_address)
+                if wallet:
+                    solved = wallet.get('solved_challenges', [])
+                    if challenge_id in solved:
+                        return True
+            except:
+                # Pool doesn't exist or other error, skip
+                pass
+        
+        return False
+    
+    def _select_wallet_only(
+        self,
+        pool_id: PoolId,
+        use_dev_wallet: bool,
+        sticky_address: Optional[str] = None,
+        worker_id: Optional[int] = None
+    ) -> tuple[Optional[WalletOptional], bool]:
+        """
+        Select a wallet without challenge assignment.
+        
+        Args:
+            pool_id: Pool identifier
+            use_dev_wallet: Whether to prefer dev wallet
+            sticky_address: Sticky wallet address for CPU workers
+            worker_id: Worker ID for CPU sticky tracking
+            
+        Returns:
+            Tuple of (wallet, is_dev_wallet_flag)
+        """
+        if use_dev_wallet:
+            # For dev wallets, we'll allocate without specific challenge
+            # We use a temporary challenge ID just to get a wallet
+            wallet = self._allocate_dev_wallet(pool_id, "temp_challenge")
+            if wallet:
+                return (wallet, True)
+            logging.warning("No dev wallets available for pool %s; skipping dev fee assignment", pool_id)
+            return (None, False)
+        
+        # For user wallets, handle sticky logic
+        if sticky_address:
+            logging.debug(
+                "Coordinator: Attempting to reuse sticky wallet %s for worker %s",
+                sticky_address[:8],
+                worker_id
+            )
+            wallet = wallet_pool.get_wallet(pool_id, sticky_address)
+            if wallet and not wallet.get('in_use'):
+                return (wallet, False)
+            logging.warning("Sticky wallet %s not available", sticky_address[:8])
+        
+        # Allocate any available user wallet (without specific challenge)
+        wallet = wallet_pool.allocate_wallet(pool_id, "temp_challenge")
+        if wallet:
+            return (wallet, False)
+        
+        # Try creating a new wallet
+        created = wallet_pool.create_wallet(pool_id, is_dev_wallet=False)
+        if not created:
+            return (None, False)
+        
+        wallet = wallet_pool.allocate_wallet(pool_id, "temp_challenge")
+        return (wallet, False) if wallet else (None, False)
     
     def _select_wallet(
         self,

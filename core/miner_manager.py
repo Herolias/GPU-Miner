@@ -358,22 +358,37 @@ class MinerManager:
         
         while self.running:
             try:
-                # 1. Fetch challenge
-                if not current_challenge or (req_id % CHALLENGE_REFRESH_FREQUENCY == 0):
-                    new_challenge = api.get_current_challenge()
-                    if new_challenge:
-                        current_challenge = new_challenge
-                        db.register_challenge(current_challenge)
-                        self.current_challenge_id = current_challenge['challenge_id']
-                        self.current_difficulty = current_challenge['difficulty']
+                # 1. Fetch and register latest challenge
+                latest_challenge = api.get_current_challenge()
+                if latest_challenge:
+                    from .challenge_cache import challenge_cache
+                    challenge_cache.register_challenge(latest_challenge)
+                    
+                    # Periodically cleanup expired challenges
+                    if req_id % 100 == 0:
+                        challenge_cache.cleanup_expired()
                 
-                if not current_challenge:
+                # 2. Get all valid challenges (skip those expiring in <1h)
+                from .challenge_cache import challenge_cache
+                valid_challenges = challenge_cache.get_valid_challenges(min_time_remaining_hours=1.0)
+                
+                if not valid_challenges:
                     self.active_wallet_count = 0
-                    logging.warning("Waiting for challenge...")
+                    logging.warning("No valid challenges available (may be expiring soon)")
                     time.sleep(WAITING_FOR_CHALLENGE_SLEEP)
                     continue
                 
-                # 2. Process retry queue
+                # Update dashboard with challenge info
+                self.current_challenge_id = f"{len(valid_challenges)} active challenges"
+                if valid_challenges:
+                    # Show difficulty of easiest challenge
+                    easiest = min(valid_challenges, key=lambda c: int(c['difficulty'], 16))
+                    self.current_difficulty = easiest['difficulty'][:10] + "..."
+                
+                # 3. Get cached ROM keys for optimization
+                cached_rom_keys = self._get_cached_rom_keys()
+                
+                # 4. Dispatch GPU jobs
                 if self.retry_manager.get_queue_size() > 0:
                     self.retry_manager.process_immediate_retries(
                         on_success=self._on_retry_success,
@@ -384,7 +399,7 @@ class MinerManager:
                 # 2b. Load persistent retries
                 self.retry_manager.load_persistent_retries(req_id)
                 
-                # 3. Dispatch GPU jobs
+                # 5. Dispatch GPU jobs
                 while self.mining_coordinator.can_dispatch_gpu(num_gpus, active_gpu_requests):
                     if not self.running:
                         break
@@ -396,9 +411,10 @@ class MinerManager:
                     result = self.mining_coordinator.dispatch_job(
                         worker_type='gpu',
                         worker_id=gpu_id,
-                        challenge=current_challenge,
+                        available_challenges=valid_challenges,
                         req_id=req_id,
-                        use_dev_wallet=use_dev
+                        use_dev_wallet=use_dev,
+                        cached_rom_keys=cached_rom_keys
                     )
                     
                     if result:
@@ -408,7 +424,7 @@ class MinerManager:
                     else:
                         break
                 
-                # 4. Dispatch CPU jobs
+                # 6. Dispatch CPU jobs
                 free_cpu_id = self.mining_coordinator.can_dispatch_cpu(num_cpus, active_requests)
                 while free_cpu_id is not None:
                     if not self.running:
@@ -420,9 +436,10 @@ class MinerManager:
                     result = self.mining_coordinator.dispatch_job(
                         worker_type='cpu',
                         worker_id=free_cpu_id,
-                        challenge=current_challenge,
+                        available_challenges=valid_challenges,
                         req_id=req_id,
-                        use_dev_wallet=use_dev
+                        use_dev_wallet=use_dev,
+                        cached_rom_keys=cached_rom_keys
                     )
                     
                     if result:
@@ -433,18 +450,18 @@ class MinerManager:
                     else:
                         break
                 
-                # 5. Check for GPU responses
+                # 7. Check for GPU responses
                 try:
                     response = self.gpu_response_queue.get_nowait()
-                    self._handle_response(response, active_requests, current_challenge, num_gpus)
+                    self._handle_response(response, active_requests, valid_challenges[0] if valid_challenges else {}, num_gpus)
                     active_gpu_requests -= 1
                 except queue.Empty:
                     pass
                 
-                # 6. Check for CPU responses
+                # 8. Check for CPU responses
                 try:
                     response = self.cpu_response_queue.get_nowait()
-                    self._handle_response(response, active_requests, current_challenge, num_cpus)
+                    self._handle_response(response, active_requests, valid_challenges[0] if valid_challenges else {}, num_cpus)
                     active_cpu_requests -= 1
                 except queue.Empty:
                     pass
@@ -501,6 +518,17 @@ class MinerManager:
             )
         
         time.sleep(2)  # Brief pause for API rate limits
+    
+    def _get_cached_rom_keys(self) -> set[str]:
+        """
+        Get ROM keys currently tracked by mining coordinator.
+        
+        Returns:
+            Set of ROM keys recently used (for cache optimization)
+        """
+        if hasattr(self.mining_coordinator, 'recent_rom_keys'):
+            return self.mining_coordinator.recent_rom_keys.copy()
+        return set()
     
     def _handle_response(
         self,
