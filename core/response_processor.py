@@ -14,6 +14,7 @@ from .wallet_pool import wallet_pool
 from .constants import HASHRATE_EMA_WEIGHT_OLD, HASHRATE_EMA_WEIGHT_NEW
 from .types import MineResponse, Challenge, WorkerType, PoolId
 from . import mining_utils
+from .rom_handler import get_rom_handler
 
 
 class ResponseProcessor:
@@ -34,6 +35,7 @@ class ResponseProcessor:
         self.session_solutions = 0
         self.dev_session_solutions = 0
         self.wallet_session_solutions: Dict[str, int] = {}
+        self.rom_cache = {}
     
     def process_response(
         self,
@@ -125,7 +127,62 @@ class ResponseProcessor:
                 f"{worker_type.upper()} {worker_id} SOLUTION FOUND! "
                 f"Nonce: {response['nonce']}"
             )
-        
+
+        # ---------------------------------------------------------
+        # LOCAL VERIFICATION (Fix for invalid solutions)
+        # ---------------------------------------------------------
+        try:
+            # 1. Get ROM
+            rom_key = current_challenge['no_pre_mine']
+            if rom_key not in self.rom_cache:
+                # Limit cache size
+                if len(self.rom_cache) >= 2:
+                    self.rom_cache.pop(next(iter(self.rom_cache)))
+                
+                logging.info(f"Verifying: Building ROM {rom_key[:8]}...")
+                rom_handler = get_rom_handler()
+                self.rom_cache[rom_key] = rom_handler.build_rom(rom_key)
+            
+            rom = self.rom_cache[rom_key]
+            
+            # 2. Prepare params
+            # Need wallet object to build salt. We have address.
+            # We can reconstruct a minimal wallet dict for the utility function
+            temp_wallet = {'address': wallet_address}
+            salt_prefix = mining_utils.build_salt_prefix(temp_wallet, current_challenge)
+            salt_prefix_str = salt_prefix.decode('utf-8')
+            
+            preimage_str = nonce_hex + salt_prefix_str
+            
+            # 3. Hash (8 loops, 256 instrs - standard)
+            digest_hex = rom.hash_with_params(preimage_str, 8, 256)
+            
+            # 4. Check Difficulty (FULL 256-bit check)
+            digest_int = int(digest_hex, 16)
+            target_diff = mining_utils.parse_difficulty(current_challenge['difficulty'], full=True)
+            
+            if digest_int > target_diff:
+                logging.warning(
+                    f"⚠️ INVALID SOLUTION DETECTED (Locally)! "
+                    f"Digest: {digest_hex[:16]}... > Target: {current_challenge['difficulty'][:16]}..."
+                )
+                logging.warning(f"Discarding solution to prevent API rejection.")
+                
+                # Release wallet but mark as NOT solved so it can try again
+                wallet_pool.release_wallet(pool_id, wallet_address, challenge_id, solved=False)
+                return
+
+            logging.info(f"✓ Solution verified locally (256-bit check passed)")
+            
+        except Exception as e:
+            logging.error(f"Local verification error: {e}")
+            # If verification fails due to error, we might still want to try submitting?
+            # Or fail safe? Let's log and proceed to submit, assuming it might be a bug in verification code
+            # but usually it's safer to proceed if we're not sure.
+            pass
+
+        # ---------------------------------------------------------
+
         # Submit solution
         success, is_fatal = api.submit_solution(wallet_address, challenge_id, nonce_hex)
         

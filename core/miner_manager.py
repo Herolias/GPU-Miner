@@ -358,8 +358,12 @@ class MinerManager:
         
         while self.running:
             try:
-                # 1. Fetch and register latest challenge
-                latest_challenge = api.get_current_challenge()
+                # 1. Use latest challenge from polling thread (Non-blocking)
+                # REFACTORED: Removed blocking api.get_current_challenge() call
+                latest_challenge = None
+                with self.challenge_lock:
+                    latest_challenge = self.latest_challenge
+
                 if latest_challenge:
                     from .challenge_cache import challenge_cache
                     challenge_cache.register_challenge(latest_challenge)
@@ -450,19 +454,21 @@ class MinerManager:
                     else:
                         break
                 
-                # 7. Check for GPU responses
+                # 7. Check for GPU responses (Drain queue)
                 try:
-                    response = self.gpu_response_queue.get_nowait()
-                    self._handle_response(response, active_requests, valid_challenges[0] if valid_challenges else {}, num_gpus)
-                    active_gpu_requests -= 1
+                    while True:
+                        response = self.gpu_response_queue.get_nowait()
+                        self._handle_response(response, active_requests, valid_challenges[0] if valid_challenges else {}, num_gpus)
+                        active_gpu_requests -= 1
                 except queue.Empty:
                     pass
                 
-                # 8. Check for CPU responses
+                # 8. Check for CPU responses (Drain queue)
                 try:
-                    response = self.cpu_response_queue.get_nowait()
-                    self._handle_response(response, active_requests, valid_challenges[0] if valid_challenges else {}, num_cpus)
-                    active_cpu_requests -= 1
+                    while True:
+                        response = self.cpu_response_queue.get_nowait()
+                        self._handle_response(response, active_requests, valid_challenges[0] if valid_challenges else {}, num_cpus)
+                        active_cpu_requests -= 1
                 except queue.Empty:
                     pass
                 

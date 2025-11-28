@@ -308,17 +308,21 @@ class WalletPool:
                     if not require_dev and is_dev_wallet:
                         continue
                     
-                    solved_challenges = wallet.get("solved_challenges", [])
+                    # Check if in use
                     in_use = wallet.get("in_use", False)
+                    if in_use:
+                        continue
                     
                     # BUG FIX: Treat dev wallets the same as user wallets
                     # Only skip if already solved THIS SPECIFIC challenge or in use
                     # This allows dev wallet reuse across different challenges
-                    if challenge_id in solved_challenges:
-                        # logging.debug(f"Skipping wallet {wallet['address'][:8]} (Already solved {challenge_id[:8]})")
-                        continue
-                    if in_use:
-                        continue
+                    
+                    # MULTI-CHALLENGE FIX: Support challenge_id="any" for wallet selection without challenge filter
+                    if challenge_id != "any":
+                        solved_challenges = wallet.get("solved_challenges", [])
+                        if challenge_id in solved_challenges:
+                            # logging.debug(f"Skipping wallet {wallet['address'][:8]} (Already solved {challenge_id[:8]})")
+                            continue
                     
                     # Mark as in use
                     wallet["in_use"] = True

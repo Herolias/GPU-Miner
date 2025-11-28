@@ -71,3 +71,4 @@ gpu_core/.cuda_cache/
 
 verify_dashboard.py
 
+verify_fixes.py

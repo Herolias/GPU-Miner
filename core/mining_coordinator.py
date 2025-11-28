@@ -106,6 +106,17 @@ class MiningCoordinator:
             # Release wallet since we can't use it
             wallet_pool.release_wallet(pool_id, wallet['address'])
             return None
+        
+        # Update wallet with the actual challenge
+        # For sticky wallets, use reuse_wallet; for new allocations, update directly
+        if sticky_address and wallet['address'] == sticky_address:
+            # Sticky wallet - update its challenge
+            wallet_pool.reuse_wallet(pool_id, wallet['address'], challenge['challenge_id'])
+            wallet['current_challenge'] = challenge['challenge_id']
+        else:
+            # New allocation - update challenge info
+            wallet['current_challenge'] = challenge['challenge_id']
+            # Note: wallet is already marked in_use by allocate_wallet or manually above
             
         # Update sticky tracking if this is a CPU worker
         if worker_type == 'cpu' and not is_dev:
@@ -244,15 +255,23 @@ class MiningCoordinator:
             Tuple of (wallet, is_dev_wallet_flag)
         """
         if use_dev_wallet:
-            # For dev wallets, we'll allocate without specific challenge
-            # We use a temporary challenge ID just to get a wallet
-            wallet = self._allocate_dev_wallet(pool_id, "temp_challenge")
+            # For dev wallets, try to get any available dev wallet
+            # We'll assign the specific challenge later
+            wallet = wallet_pool.allocate_wallet(pool_id, "any", require_dev=True)
             if wallet:
                 return (wallet, True)
+            
+            # Create new dev wallet if none available
+            created = wallet_pool.create_wallet(pool_id, is_dev_wallet=True)
+            if created:
+                wallet = wallet_pool.allocate_wallet(pool_id, "any", require_dev=True)
+                if wallet:
+                    return (wallet, True)
+            
             logging.warning("No dev wallets available for pool %s; skipping dev fee assignment", pool_id)
             return (None, False)
         
-        # For user wallets, handle sticky logic
+        # For user wallets with sticky logic (CPU workers)
         if sticky_address:
             logging.debug(
                 "Coordinator: Attempting to reuse sticky wallet %s for worker %s",
@@ -260,12 +279,20 @@ class MiningCoordinator:
                 worker_id
             )
             wallet = wallet_pool.get_wallet(pool_id, sticky_address)
-            if wallet and not wallet.get('in_use'):
-                return (wallet, False)
-            logging.warning("Sticky wallet %s not available", sticky_address[:8])
+            if wallet:
+                # FIX: Just return the sticky wallet directly
+                # We'll update it with the actual challenge after challenge selection
+                if not wallet.get('in_use'):
+                    # Mark as in use temporarily (will be updated with real challenge later)
+                    wallet['in_use'] = True
+                    return (wallet, False)
+                else:
+                    logging.debug(f"Sticky wallet {sticky_address[:8]} is in use, will try to get another")
+            else:
+                logging.warning(f"Sticky wallet {sticky_address[:8]} not found in pool")
         
-        # Allocate any available user wallet (without specific challenge)
-        wallet = wallet_pool.allocate_wallet(pool_id, "temp_challenge")
+        # Try to allocate any available user wallet
+        wallet = wallet_pool.allocate_wallet(pool_id, "any", require_dev=False)
         if wallet:
             return (wallet, False)
         
@@ -274,7 +301,7 @@ class MiningCoordinator:
         if not created:
             return (None, False)
         
-        wallet = wallet_pool.allocate_wallet(pool_id, "temp_challenge")
+        wallet = wallet_pool.allocate_wallet(pool_id, "any", require_dev=False)
         return (wallet, False) if wallet else (None, False)
     
     def _select_wallet(
