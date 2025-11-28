@@ -60,16 +60,13 @@ def parse_difficulty(difficulty_str: str, full: bool = False) -> int:
         >>> parse_difficulty("0000ff00" + "00" * 28, full=True)
         65280
     """
-    # Handle optional '0x' prefix
-    clean_diff = difficulty_str.lower().replace('0x', '')
-    
     if full:
         # Parse full 256-bit difficulty (64 hex chars)
-        # Pad with zeros to the right if shorter than 64 chars to represent the full target
-        padded_diff = clean_diff.ljust(64, '0')
-        return int(padded_diff, 16)
+        return int(difficulty_str, 16)
     else:
         # Parse first 32 bits (8 hex chars) for GPU/CPU
+        # Handle optional '0x' prefix to ensure we get the correct 8 chars
+        clean_diff = difficulty_str.lower().replace('0x', '')
         return int(clean_diff[:8], 16)
 
 
