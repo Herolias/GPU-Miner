@@ -151,17 +151,23 @@ class Dashboard:
         delta = datetime.now() - self.start_time
         return str(delta).split('.')[0] # Remove microseconds
 
-    def _clear_screen(self):
-        # Use ANSI escape codes to reset cursor and clear from cursor to end
-        # This reduces flicker compared to clearing the entire screen
-        print('\033[H\033[J', end='')
+    def render(self):
+        # Update system stats (non-blocking check inside)
+        self.sys_mon.update()
+        
+        with self.lock:
+            # Build the entire output string first to avoid flicker
+            buffer = []
+            
+            # Clear screen ANSI code at the start
+            buffer.append('\033[H\033[J')
 
-    def _render_loading(self):
-        spinner = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
-        self._spinner_index += 1
-
-        print(f"{CYAN}{BOLD}")
-        print(r"""
+            if self.loading_message:
+                spinner = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
+                self._spinner_index += 1
+                
+                buffer.append(f"{CYAN}{BOLD}")
+                buffer.append(r"""
    _____  _____   _    _     __  __  _____  _   _  ______  _____  
   / ____||  __ \ | |  | |   |  \/  ||_   _|| \ | ||  ____||  __ \ 
  | |  __ | |__) || |  | |   | \  / |  | |  |  \| || |__   | |__) |
@@ -169,24 +175,18 @@ class Dashboard:
  | |__| || |     | |__| |   | |  | | _| |_ | |\  || |____ | | \ \ 
   \_____||_|      \____/    |_|  |_||_____||_| \_||______||_|  \_\                                                                                                                               
 """)
-        print(f"{RESET}")
-        print(f"{BOLD}{spinner} {self.loading_message or 'Loading...'}{RESET}")
-        print("\nPlease wait while the CUDA kernels are being built...")
-
-    def render(self):
-        # Update system stats (non-blocking check inside)
-        self.sys_mon.update()
-        
-        with self.lock:
-            self._clear_screen()
-
-            if self.loading_message:
-                self._render_loading()
+                buffer.append(f"{RESET}")
+                buffer.append(f"{BOLD}{spinner} {self.loading_message or 'Loading...'}{RESET}")
+                buffer.append("\nPlease wait while the CUDA kernels are being built...")
+                
+                # Print everything at once
+                sys.stdout.write('\n'.join(buffer))
+                sys.stdout.flush()
                 return
 
             # Header
-            print(f"{CYAN}{BOLD}")
-            print(r"""
+            buffer.append(f"{CYAN}{BOLD}")
+            buffer.append(r"""
     _____  _____   _    _     __  __  _____  _   _  ______  _____  
   / ____||  __ \ | |  | |   |  \/  ||_   _|| \ | ||  ____||  __ \ 
  | |  __ | |__) || |  | |   | \  / |  | |  |  \| || |__   | |__) |
@@ -194,44 +194,58 @@ class Dashboard:
  | |__| || |     | |__| |   | |  | | _| |_ | |\  || |____ | | \ \ 
   \_____||_|      \____/    |_|  |_||_____||_| \_||______||_|  \_\                                                                
                                                        """)
-            print(f"{RESET}")
+            buffer.append(f"{RESET}")
             
             version = config.get("miner.version", "1.0.0")
             uptime = self._get_uptime()
             
-            print(f"{BOLD}Version:{RESET} {version} | {BOLD}Uptime:{RESET} {uptime}")
-            print(f"{CYAN}" + "="*60 + f"{RESET}")
+            buffer.append(f"{BOLD}Version:{RESET} {version} | {BOLD}Uptime:{RESET} {uptime}")
+            buffer.append(f"{CYAN}" + "="*60 + f"{RESET}")
             
             # System Stats
             cpu_str = f"CPU: {self.sys_mon.cpu_load:>4.1f}%"
             if self.sys_mon.cpu_temp > 0:
                 cpu_str += f" ({self.sys_mon.cpu_temp:.0f}°C)"
             
-            gpu_strs = []
+            # Multi-line GPU Stats
+            gpu_lines = []
             if self.sys_mon.gpus:
-                for gpu in self.sys_mon.gpus:
+                GPUS_PER_LINE = 3
+                current_line = []
+                for i, gpu in enumerate(self.sys_mon.gpus):
                     g_str = f"GPU{gpu['id']}: {gpu['load']:>3.0f}%"
                     if gpu['temp'] > 0:
                         g_str += f" ({gpu['temp']:.0f}°C)"
-                    gpu_strs.append(g_str)
-                gpu_line = " | ".join(gpu_strs)
+                    current_line.append(g_str)
+                    
+                    if len(current_line) >= GPUS_PER_LINE:
+                        gpu_lines.append(" | ".join(current_line))
+                        current_line = []
+                
+                if current_line:
+                    gpu_lines.append(" | ".join(current_line))
             else:
-                gpu_line = "GPU: N/A"
+                gpu_lines.append("GPU: N/A")
 
-            print(f"{BOLD}System:{RESET} {cpu_str} | {gpu_line}")
-            print(f"{CYAN}" + "-"*60 + f"{RESET}")
+            # Combine CPU and first line of GPU
+            buffer.append(f"{BOLD}System:{RESET} {cpu_str} | {gpu_lines[0]}")
+            
+            # Print remaining GPU lines indented
+            for line in gpu_lines[1:]:
+                buffer.append(f"        {line}") # Align with where GPU starts roughly
+                
+            buffer.append(f"{CYAN}" + "-"*60 + f"{RESET}")
 
             # Main Stats
-            print(f"{BOLD}Mining Status:{RESET}")
-            # print(f"  Active Wallets:    {self.active_wallets}")  # Debug only
+            buffer.append(f"{BOLD}Mining Status:{RESET}")
             
             challenge_display = self.current_challenge if self.current_challenge else "Waiting..."
             if len(challenge_display) > 16:
                 challenge_display = challenge_display[:16] + "..."
-            print(f"  Current Challenge: {GREEN}{challenge_display}{RESET}")
+            buffer.append(f"  Current Challenge: {GREEN}{challenge_display}{RESET}")
             
             difficulty_display = self.difficulty if self.difficulty else "N/A"
-            print(f"  Difficulty:        {YELLOW}{difficulty_display}{RESET}")
+            buffer.append(f"  Difficulty:        {YELLOW}{difficulty_display}{RESET}")
             
             if self.total_hashrate < 1_000_000:
                 hr_str = f"{self.total_hashrate / 1_000:.2f} KH/s"
@@ -249,45 +263,42 @@ class Dashboard:
             else:
                 gpu_hr_str = f"{self.gpu_hashrate / 1_000_000:.2f} MH/s"
 
-            print(f"  Total Hashrate:    {CYAN}{hr_str}{RESET} (CPU: {cpu_hr_str} | GPU: {gpu_hr_str})")
+            buffer.append(f"  Total Hashrate:    {CYAN}{hr_str}{RESET} (CPU: {cpu_hr_str} | GPU: {gpu_hr_str})")
             
             # Solutions
-            print(f"\n{BOLD}Solutions:{RESET}")
-            print(f"  Session Found:     {GREEN}{self.session_solutions}{RESET}")
-            print(f"  All-Time Found:    {GREEN}{self.all_time_solutions}{RESET}")
-            
-            # Wallet Stats (Debug only)
-            # if self.wallet_solutions:
-            #     print(f"\n{BOLD}Wallet Performance (Session):{RESET}")
-            #     for wallet, count in self.wallet_solutions.items():
-            #         short_addr = f"{wallet[:10]}...{wallet[-4:]}"
-            #         print(f"  {short_addr}: {count} solutions")
+            buffer.append(f"\n{BOLD}Solutions:{RESET}")
+            buffer.append(f"  Session Found:     {GREEN}{self.session_solutions}{RESET}")
+            buffer.append(f"  All-Time Found:    {GREEN}{self.all_time_solutions}{RESET}")
             
             # Consolidation
             consolidation_addr = config.get("wallet.consolidate_address")
-            print(f"\n{CYAN}" + "="*60 + f"{RESET}")
+            buffer.append(f"\n{CYAN}" + "="*60 + f"{RESET}")
             if consolidation_addr:
-                print(f"{BOLD}Consolidation:{RESET} {consolidation_addr[:10]}...{consolidation_addr[-4:]}")
+                buffer.append(f"{BOLD}Consolidation:{RESET} {consolidation_addr[:10]}...{consolidation_addr[-4:]}")
             else:
-                print(f"{YELLOW}{BOLD}NOTE:{RESET} No consolidation address set. Edit config.yaml to set one.")
+                buffer.append(f"{YELLOW}{BOLD}NOTE:{RESET} No consolidation address set. Edit config.yaml to set one.")
             
             # Status Section
-            print(f"{CYAN}" + "="*60 + f"{RESET}")
+            buffer.append(f"{CYAN}" + "="*60 + f"{RESET}")
             if self.last_error:
                 ts, msg, level = self.last_error
                 color = RED if level >= logging.ERROR else YELLOW
                 # Truncate message if too long
                 if len(msg) > 50:
                     msg = msg[:47] + "..."
-                print(f"{color}{BOLD}Last Issue:{RESET} [{ts}] {msg}")
+                buffer.append(f"{color}{BOLD}Last Issue:{RESET} [{ts}] {msg}")
             elif self.last_solution:
                 ts, challenge_id = self.last_solution
-                print(f"{GREEN}{BOLD}Last Solution:{RESET} [{ts}] for Challenge {challenge_id}")
+                buffer.append(f"{GREEN}{BOLD}Last Solution:{RESET} [{ts}] for Challenge {challenge_id}")
             else:
-                print(f"{GREEN}Status: Running{RESET}")
+                buffer.append(f"{GREEN}Status: Running{RESET}")
             
-            print(f"{CYAN}" + "="*60 + f"{RESET}")
-            print("\nPress Ctrl+C to stop.")
+            buffer.append(f"{CYAN}" + "="*60 + f"{RESET}")
+            buffer.append("\nPress Ctrl+C to stop.")
+            
+            # Print everything at once
+            sys.stdout.write('\n'.join(buffer))
+            sys.stdout.flush()
 
 # Global instance
 dashboard = Dashboard()

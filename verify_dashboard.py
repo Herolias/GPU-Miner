@@ -35,13 +35,23 @@ try:
     else:
         print("FAIL: Error not registered.")
 
-    print("\nSimulating render...")
-    # We won't call render() directly as it clears screen, but we can check if it throws
-    # try:
-    #     dashboard.render()
-    #     print("Render called successfully (screen cleared above)")
-    # except Exception as e:
-    #     print(f"Render failed: {e}")
+    print("\nSimulating High GPU Count (8 GPUs)...")
+    dashboard.sys_mon.gpus = []
+    for i in range(8):
+        dashboard.sys_mon.gpus.append({
+            'id': i,
+            'load': 100.0,
+            'temp': 65.0 + i
+        })
+    
+    print("Rendering Dashboard (Buffer Check)...")
+    try:
+        # We can't easily capture sys.stdout.write in this simple script without redirecting stdout
+        # But we can just run it and see if it crashes, and visually check the output
+        dashboard.render()
+        print("\nRender completed successfully.")
+    except Exception as e:
+        print(f"Render failed: {e}")
 
 except ImportError as e:
     print(f"Import failed: {e}")
