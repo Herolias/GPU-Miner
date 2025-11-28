@@ -85,13 +85,15 @@ class ResponseProcessor:
                 current_challenge=current_challenge
             )
         else:
-            # No solution found
-            if not is_dev_solution:
-                if not keep_wallet_on_fail:
-                    wallet_pool.release_wallet(pool_id, wallet_address, challenge_id, solved=False)
-                else:
-                    # Sticky wallet: Don't release, so it stays "in_use" for this worker
-                    pass
+            # No solution found - release wallet
+            if is_dev_solution:
+                # BUG FIX: Release dev wallets too, they were getting stuck!
+                wallet_pool.release_wallet(pool_id, wallet_address, challenge_id, solved=False)
+            elif not keep_wallet_on_fail:
+                wallet_pool.release_wallet(pool_id, wallet_address, challenge_id, solved=False)
+            else:
+                # Sticky wallet: Don't release, so it stays "in_use" for this worker
+                pass
         
         # Update hashrate
         self._update_hashrate(response, worker_type, num_workers)
