@@ -309,13 +309,11 @@ class WalletPool:
                         continue
                     
                     solved_challenges = wallet.get("solved_challenges", [])
-                    if require_dev and solved_challenges:
-                        latest_solved = solved_challenges[-1]
-                        if latest_solved == challenge_id:
-                            continue
                     in_use = wallet.get("in_use", False)
                     
-                    # Skip if already solved this challenge or in use
+                    # BUG FIX: Treat dev wallets the same as user wallets
+                    # Only skip if already solved THIS SPECIFIC challenge or in use
+                    # This allows dev wallet reuse across different challenges
                     if challenge_id in solved_challenges:
                         # logging.debug(f"Skipping wallet {wallet['address'][:8]} (Already solved {challenge_id[:8]})")
                         continue

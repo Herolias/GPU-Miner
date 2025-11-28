@@ -13,6 +13,69 @@ RED = "\033[91m"
 RESET = "\033[0m"
 BOLD = "\033[1m"
 
+import subprocess
+import psutil
+
+class SystemMonitor:
+    def __init__(self):
+        self.cpu_load = 0.0
+        self.cpu_temp = 0.0
+        self.gpu_load = 0.0
+        self.gpu_temp = 0.0
+        self.last_update = 0
+        self.update_interval = 2.0  # Update every 2 seconds
+
+    def update(self):
+        now = time.time()
+        if now - self.last_update < self.update_interval:
+            return
+
+        self.last_update = now
+        
+        # CPU Stats
+        try:
+            self.cpu_load = psutil.cpu_percent(interval=None)
+            # CPU Temp (Linux specific usually, but try psutil sensors)
+            # Windows usually doesn't expose CPU temp via psutil easily without admin or specific hardware support
+            # We'll skip CPU temp for Windows for now or try a generic approach if available
+            temps = psutil.sensors_temperatures() if hasattr(psutil, "sensors_temperatures") else {}
+            if 'coretemp' in temps:
+                self.cpu_temp = temps['coretemp'][0].current
+            else:
+                self.cpu_temp = 0.0 # Not available
+        except:
+            self.cpu_load = 0.0
+            self.cpu_temp = 0.0
+
+        # GPU Stats (nvidia-smi)
+        try:
+            # Run nvidia-smi to get load and temp
+            # Format: utilization.gpu, temperature.gpu
+            cmd = ['nvidia-smi', '--query-gpu=utilization.gpu,temperature.gpu', '--format=csv,noheader,nounits']
+            # Use specific encoding and error handling
+            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=1).decode('utf-8').strip()
+            if output:
+                # Handle multiple GPUs - just take average or first?
+                # Let's show the first one or average. For dashboard simplicity, let's show Max or Avg.
+                # If multiple lines, parse them.
+                lines = output.split('\n')
+                loads = []
+                temps = []
+                for line in lines:
+                    try:
+                        l, t = line.split(',')
+                        loads.append(float(l.strip()))
+                        temps.append(float(t.strip()))
+                    except:
+                        pass
+                
+                if loads:
+                    self.gpu_load = sum(loads) / len(loads)
+                    self.gpu_temp = max(temps) # Show max temp for safety
+        except Exception:
+            self.gpu_load = 0.0
+            self.gpu_temp = 0.0
+
 class Dashboard:
     def __init__(self):
         self.start_time = datetime.now()
@@ -20,6 +83,8 @@ class Dashboard:
 
         # Stats
         self.total_hashrate = 0.0
+        self.cpu_hashrate = 0.0
+        self.gpu_hashrate = 0.0
         self.session_solutions = 0
         self.all_time_solutions = 0
         self.wallet_solutions = {} # wallet -> count
@@ -29,6 +94,9 @@ class Dashboard:
         self.loading_message = None
         self._spinner_frames = ['|', '/', '-', '\\']
         self._spinner_index = 0
+        
+        # System Monitor
+        self.sys_mon = SystemMonitor()
 
         # Console setup
         os.system('color') # Enable ANSI on Windows
@@ -78,6 +146,9 @@ class Dashboard:
         print("\nPlease wait while the CUDA kernels are being built...")
 
     def render(self):
+        # Update system stats (non-blocking check inside)
+        self.sys_mon.update()
+        
         with self.lock:
             self._clear_screen()
 
@@ -103,8 +174,20 @@ class Dashboard:
             print(f"{BOLD}Version:{RESET} {version} | {BOLD}Uptime:{RESET} {uptime}")
             print(f"{CYAN}" + "="*60 + f"{RESET}")
             
+            # System Stats
+            cpu_str = f"CPU: {self.sys_mon.cpu_load:>4.1f}%"
+            if self.sys_mon.cpu_temp > 0:
+                cpu_str += f" ({self.sys_mon.cpu_temp:.0f}°C)"
+            
+            gpu_str = f"GPU: {self.sys_mon.gpu_load:>4.1f}%"
+            if self.sys_mon.gpu_temp > 0:
+                gpu_str += f" ({self.sys_mon.gpu_temp:.0f}°C)"
+                
+            print(f"{BOLD}System:{RESET} {cpu_str} | {gpu_str}")
+            print(f"{CYAN}" + "-"*60 + f"{RESET}")
+
             # Main Stats
-            print(f"\n{BOLD}Mining Status:{RESET}")
+            print(f"{BOLD}Mining Status:{RESET}")
             # print(f"  Active Wallets:    {self.active_wallets}")  # Debug only
             
             challenge_display = self.current_challenge if self.current_challenge else "Waiting..."

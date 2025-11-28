@@ -156,16 +156,24 @@ class MiningCoordinator:
         return (wallet, False)
     
     def _allocate_dev_wallet(self, pool_id: PoolId, challenge_id: str) -> Optional[WalletOptional]:
-        """Allocate a dev wallet from the JSON pool."""
-        while True:
-            wallet = wallet_pool.allocate_wallet(pool_id, challenge_id, require_dev=True)
-            if wallet:
-                return wallet
-            
-            created = wallet_pool.create_wallet(pool_id, is_dev_wallet=True)
-            if not created:
-                logging.error("Failed to create dev wallet for pool %s", pool_id)
-                return None
+        """Allocate a dev wallet from the pool with bounded creation attempts."""
+        # Try to allocate existing dev wallet first
+        wallet = wallet_pool.allocate_wallet(pool_id, challenge_id, require_dev=True)
+        if wallet:
+            return wallet
+        
+        # BUG FIX: Only create ONE new dev wallet instead of infinite loop
+        # This prevents dev wallet explosion over time
+        created = wallet_pool.create_wallet(pool_id, is_dev_wallet=True)
+        if not created:
+            logging.error("Failed to create dev wallet for pool %s", pool_id)
+            return None
+        
+        # Try one more time to allocate the newly created wallet
+        wallet = wallet_pool.allocate_wallet(pool_id, challenge_id, require_dev=True)
+        if not wallet:
+            logging.warning("Dev wallet created but could not be allocated for pool %s", pool_id)
+        return wallet
     
     def _allocate_user_wallet(
         self,
