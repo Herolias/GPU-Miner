@@ -52,10 +52,14 @@ def main():
     wallet_pool = WalletPool()
     base_dir = Path(".")
     
-    # 3. Find all wallet files
+    # 3. Find all wallet files (GPU and CPU)
     wallet_files = list(base_dir.glob("wallets_gpu_*.json"))
+    cpu_wallet_file = base_dir / "wallets_cpu.json"
+    if cpu_wallet_file.exists():
+        wallet_files.append(cpu_wallet_file)
+    
     if not wallet_files:
-        logging.warning("No wallet files found (wallets_gpu_*.json).")
+        logging.warning("No wallet files found (wallets_gpu_*.json or wallets_cpu.json).")
         return
 
     total_consolidated = 0
@@ -66,9 +70,14 @@ def main():
         print(f"\nProcessing {file_path.name}...")
         
         try:
-            # Extract GPU ID from filename "wallets_gpu_0.json" -> 0
+            # Extract pool ID from filename
+            # "wallets_gpu_0.json" → 0 (int)
+            # "wallets_cpu.json" → "cpu" (str)
             try:
-                gpu_id = int(file_path.stem.split('_')[-1])
+                if "cpu" in file_path.stem:
+                    pool_id = "cpu"
+                else:
+                    pool_id = int(file_path.stem.split('_')[-1])
             except ValueError:
                 logging.warning(f"Skipping file with unexpected name format: {file_path.name}")
                 continue
@@ -79,12 +88,12 @@ def main():
             # We'll use _load_pool and _save_pool from WalletPool instance
             
             # We need to acquire locks just in case
-            thread_lock = wallet_pool._get_thread_lock(gpu_id)
-            file_lock = wallet_pool._get_file_lock(gpu_id)
+            thread_lock = wallet_pool._get_thread_lock(pool_id)
+            file_lock = wallet_pool._get_file_lock(pool_id)
             
             with thread_lock:
                 with file_lock:
-                    pool_data = wallet_pool._load_pool(gpu_id)
+                    pool_data = wallet_pool._load_pool(pool_id)
                     
                     if "wallets" not in pool_data or not pool_data["wallets"]:
                         print("  No wallets in this file.")
@@ -136,7 +145,7 @@ def main():
 
                     # Save changes
                     if file_consolidated > 0 or total_failed > 0:
-                        wallet_pool._save_pool(gpu_id, pool_data)
+                        wallet_pool._save_pool(pool_id, pool_data)
                         print(f"  Saved updates to {file_path.name}")
 
         except Exception as e:

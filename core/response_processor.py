@@ -202,16 +202,9 @@ class ResponseProcessor:
             logging.error("✗ Fatal error submitting solution (Rejected). Marking as solved.")
             wallet_pool.release_wallet(pool_id, wallet_address, challenge_id, solved=True)
             
-            # Still mark as solved so we don't retry
+            # BUG FIX: Don't count rejected solutions in session/total stats
+            # Still mark as solved so we don't retry, but don't call add_solution
             db.mark_challenge_solved(wallet_address, challenge_id)
-            db.add_solution(
-                challenge_id,
-                nonce_hex,
-                wallet_address,
-                current_challenge['difficulty'],
-                is_dev_solution=is_dev_solution
-            )
-            db.update_solution_status(challenge_id, nonce_hex, 'rejected')
         else:
             # Transient error - release wallet and add to retry queue
             wallet_pool.release_wallet(pool_id, wallet_address, challenge_id, solved=False)
