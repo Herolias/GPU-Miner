@@ -52,12 +52,14 @@ class ChallengeCache:
                     if c['challenge_id'] == challenge['challenge_id']:
                         return
                 
-                # Add with timestamp
+                # CRITICAL FIX: Store COMPLETE challenge object
+                # The build_salt_prefix function requires all fields:
+                # - challenge_id, difficulty, no_pre_mine
+                # - latest_submission, no_pre_mine_hour (optional but needed for salt)
+                # Missing fields cause salt_prefix mismatch → solution validation failure
                 now = datetime.now()
                 entry = {
-                    'challenge_id': challenge['challenge_id'],
-                    'no_pre_mine': challenge['no_pre_mine'],
-                    'difficulty': challenge['difficulty'],
+                    **challenge,  # Copy all fields from original challenge
                     'discovered_at': now.isoformat(),
                     'expires_at': (now + timedelta(hours=24)).isoformat()
                 }
