@@ -36,10 +36,34 @@ class SystemMonitor:
             self.cpu_load = psutil.cpu_percent(interval=None)
             # CPU Temp (Linux specific usually, but try psutil sensors)
             temps = psutil.sensors_temperatures() if hasattr(psutil, "sensors_temperatures") else {}
-            if 'coretemp' in temps:
-                self.cpu_temp = temps['coretemp'][0].current
-            else:
-                self.cpu_temp = 0.0 # Not available
+            
+            # Check common Linux sensor names
+            sensor_names = ['coretemp', 'k10temp', 'zenpower', 'cpu_thermal']
+            found_temp = False
+            
+            for name in sensor_names:
+                if name in temps and temps[name]:
+                    self.cpu_temp = temps[name][0].current
+                    found_temp = True
+                    break
+            
+            if not found_temp:
+                # Try wmic as fallback for Windows
+                try:
+                    # Kelvin * 10
+                    cmd = ["wmic", "/namespace:\\\\root\\wmi", "PATH", "MSAcpi_ThermalZoneTemperature", "get", "CurrentTemperature"]
+                    # output like:
+                    # CurrentTemperature
+                    # 3010
+                    out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=1).decode().strip()
+                    lines = out.split('\n')
+                    for line in lines:
+                        if line.strip().isdigit():
+                            kelvin_x10 = float(line.strip())
+                            self.cpu_temp = (kelvin_x10 / 10.0) - 273.15
+                            break
+                except:
+                    self.cpu_temp = 0.0 # Not available
         except:
             self.cpu_load = 0.0
             self.cpu_temp = 0.0
