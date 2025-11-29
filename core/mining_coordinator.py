@@ -40,6 +40,8 @@ class MiningCoordinator:
         self.gpu_queue = gpu_queue
         self.cpu_queue = cpu_queue
         self.last_logged_combos: Dict[str, tuple] = {}
+        # Track sticky wallets for GPU workers: worker_id -> wallet_address
+        self.gpu_sticky_wallets: Dict[int, str] = {}
         # Track sticky wallets for CPU workers: worker_id -> wallet_address
         self.cpu_sticky_wallets: Dict[int, str] = {}
         # Track deferred dev-fee assignments for CPU workers
@@ -85,10 +87,13 @@ class MiningCoordinator:
                 desired_dev_wallet = False
             
         # Select wallet first (without challenge assignment yet)
-        # SIMPLIFIED: Just get sticky address if needed
+        # Get sticky address if this worker already has one
         sticky_address = None
-        if worker_type == 'cpu' and not desired_dev_wallet:
-            sticky_address = self.cpu_sticky_wallets.get(worker_id)
+        if not desired_dev_wallet:
+            if worker_type == 'gpu':
+                sticky_address = self.gpu_sticky_wallets.get(worker_id)
+            elif worker_type == 'cpu':
+                sticky_address = self.cpu_sticky_wallets.get(worker_id)
         
         # SMART CHALLENGE SELECTION: Minimize wallet creation
         if not available_challenges:
@@ -157,10 +162,16 @@ class MiningCoordinator:
         
         challenge = selected_challenge
             
-        # Update sticky tracking if this is a CPU worker
-        if worker_type == 'cpu' and not is_dev:
+        # Update sticky tracking for workers
+        if worker_type == 'gpu' and not is_dev:
+            # Track sticky wallet for GPU
+            if worker_id not in self.gpu_sticky_wallets:
+                 logging.debug(f"Coordinator: Assigned sticky wallet {wallet['address'][:8]} to GPU {worker_id}")
+            self.gpu_sticky_wallets[worker_id] = wallet['address']
+        elif worker_type == 'cpu' and not is_dev:
+            # Track sticky wallet for CPU
             if worker_id not in self.cpu_sticky_wallets:
-                 logging.info(f"Coordinator: Assigned sticky wallet {wallet['address'][:8]} to worker {worker_id}")
+                 logging.info(f"Coordinator: Assigned sticky wallet {wallet['address'][:8]} to CPU worker {worker_id}")
             self.cpu_sticky_wallets[worker_id] = wallet['address']
             if not desired_dev_wallet and worker_id in self.cpu_pending_dev_fee and not self.cpu_pending_dev_fee[worker_id]:
                 self.cpu_pending_dev_fee.pop(worker_id, None)
@@ -293,12 +304,15 @@ class MiningCoordinator:
             return None
         return wallet_pool.allocate_wallet(pool_id, challenge_id)
 
-    def clear_sticky_wallet(self, worker_id: int) -> None:
+    def clear_sticky_wallet(self, worker_id: int, worker_type: WorkerType = 'cpu') -> None:
         """Clear the sticky wallet assignment for a worker."""
-        if worker_id in self.cpu_sticky_wallets:
-            logging.info(f"Coordinator: Clearing sticky wallet for worker {worker_id}")
+        if worker_type == 'gpu' and worker_id in self.gpu_sticky_wallets:
+            logging.debug(f"Coordinator: Clearing sticky wallet for GPU {worker_id}")
+            del self.gpu_sticky_wallets[worker_id]
+        elif worker_type == 'cpu' and worker_id in self.cpu_sticky_wallets:
+            logging.info(f"Coordinator: Clearing sticky wallet for CPU worker {worker_id}")
             del self.cpu_sticky_wallets[worker_id]
-        self.cpu_pending_dev_fee.pop(worker_id, None)
+            self.cpu_pending_dev_fee.pop(worker_id, None)
     
     def _log_mining_start(
         self,

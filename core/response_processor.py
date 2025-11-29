@@ -69,7 +69,9 @@ class ResponseProcessor:
         # Handle errors
         if response.get('error'):
             logging.error(f"{worker_type.upper()} {worker_id} Error: {response['error']}")
-            wallet_pool.release_wallet(pool_id, wallet_address, challenge_id, solved=False)
+            # Only release wallet if not keeping it sticky
+            if not keep_wallet_on_fail:
+                wallet_pool.release_wallet(pool_id, wallet_address, challenge_id, solved=False)
             return
         
         # Handle solutions

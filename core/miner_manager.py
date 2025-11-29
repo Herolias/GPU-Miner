@@ -603,9 +603,12 @@ class MinerManager:
             keep_wallet_on_fail=True  # Keep wallets sticky for all workers (GPU and CPU)
         )
         
-        # If CPU found a solution, clear the sticky wallet assignment so it picks a new one next time
-        if worker_type == 'cpu' and response.get('found'):
-            self.mining_coordinator.clear_sticky_wallet(worker_id)
+        # Clear sticky wallet assignment when solution is found
+        if response.get('found') and not is_dev:
+            if worker_type == 'cpu':
+                self.mining_coordinator.clear_sticky_wallet(worker_id, 'cpu')
+            elif worker_type == 'gpu':
+                self.mining_coordinator.clear_sticky_wallet(worker_id, 'gpu')
     
     def _on_retry_success(
         self,
