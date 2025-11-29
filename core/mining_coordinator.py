@@ -42,8 +42,6 @@ class MiningCoordinator:
         self.last_logged_combos: Dict[str, tuple] = {}
         # Track sticky wallets for GPU workers: worker_id -> wallet_address
         self.gpu_sticky_wallets: Dict[int, str] = {}
-        # Track sticky challenges for GPU workers: worker_id -> challenge_id
-        self.gpu_sticky_challenges: Dict[int, str] = {}
         # Track sticky wallets for CPU workers: worker_id -> wallet_address
         self.cpu_sticky_wallets: Dict[int, str] = {}
         # Track deferred dev-fee assignments for CPU workers
@@ -89,61 +87,17 @@ class MiningCoordinator:
                 desired_dev_wallet = False
             
         # Select wallet first (without challenge assignment yet)
-        # Get sticky address and challenge if this worker already has them
+        # Get sticky address if this worker already has one
         sticky_address = None
-        sticky_challenge_id = None
         if not desired_dev_wallet:
             if worker_type == 'gpu':
                 sticky_address = self.gpu_sticky_wallets.get(worker_id)
-                sticky_challenge_id = self.gpu_sticky_challenges.get(worker_id)
             elif worker_type == 'cpu':
                 sticky_address = self.cpu_sticky_wallets.get(worker_id)
         
-        # If we have a sticky challenge, try to keep using it
-        if sticky_challenge_id:
-            # Find the sticky challenge in available challenges
-            sticky_challenge = next(
-                (c for c in available_challenges if c['challenge_id'] == sticky_challenge_id),
-                None
-            )
-            if sticky_challenge:
-                # Try to reuse sticky wallet with sticky challenge
-                wallet, is_dev = self._select_wallet(
-                    pool_id,
-                    sticky_challenge,
-                    desired_dev_wallet,
-                    sticky_address,
-                    worker_id,
-                    allow_creation=False
-                )
-                if wallet:
-                    # Success! Keep using same wallet + same challenge
-                    challenge = sticky_challenge
-                    logging.debug(f"{worker_type.upper()} {worker_id}: Continuing sticky challenge {challenge['challenge_id'][:8]}...")
-                    # Skip the normal challenge selection logic below
-                    selected_challenge = challenge
-                    wallet_found = True
-                else:
-                    # Sticky wallet exhausted this challenge, clear sticky state
-                    logging.debug(f"{worker_type.upper()} {worker_id}: Sticky wallet exhausted challenge {sticky_challenge_id[:8]}..., selecting new challenge")
-                    if worker_type == 'gpu':
-                        self.gpu_sticky_challenges.pop(worker_id, None)
-                    sticky_challenge_id = None
-                    wallet_found = False
-            else:
-                # Sticky challenge expired/not available, clear it
-                logging.debug(f"{worker_type.upper()} {worker_id}: Sticky challenge {sticky_challenge_id[:8]}... no longer available")
-                if worker_type == 'gpu':
-                    self.gpu_sticky_challenges.pop(worker_id, None)
-                sticky_challenge_id = None
-                wallet_found = False
-        else:
-            wallet_found = False
-        # Only do challenge selection if we didn't already find wallet via sticky challenge
-        if not wallet_found:
-            # SMART CHALLENGE SELECTION: Minimize wallet creation
-            if not available_challenges:
-                return None
+        # SMART CHALLENGE SELECTION: Minimize wallet creation
+        if not available_challenges:
+            return None
         
         # Sort challenges by discovery time (oldest first) for normal operation
         # Challenges have 'discovered_at' field from challenge_cache
@@ -172,49 +126,48 @@ class MiningCoordinator:
                 available_challenges = lower_diff_challenges + higher_diff_challenges
                 logging.debug(f"Difficulty spike detected - prioritizing lower difficulty challenges")
         
-            # WALLET REUSE FIX: Try all challenges before creating new wallet
-            # Loop through challenges to find one where an existing wallet is available
-            wallet = None
-            selected_challenge = None
-            
-            for challenge in available_challenges:
-                wallet, is_dev = self._select_wallet(
-                    pool_id,
-                    challenge,
-                    desired_dev_wallet,
-                    sticky_address,
-                    worker_id,
-                    allow_creation=False  # Don't create yet, just try existing wallets
-                )
-                if wallet:
-                    selected_challenge = challenge
-                    break
-            
-            # Only create new wallet if no existing wallet available for ANY challenge
-            if not wallet:
-                # Use oldest challenge for new wallet creation
-                selected_challenge = available_challenges[0]
-                wallet, is_dev = self._select_wallet(
-                    pool_id,
-                    selected_challenge,
-                    desired_dev_wallet,
-                    sticky_address,
-                    worker_id,
-                    allow_creation=True  # Now we can create
-                )
-            
-            if not wallet:
-                return None
+        # WALLET REUSE FIX: Try all challenges before creating new wallet
+        # Loop through challenges to find one where an existing wallet is available
+        wallet = None
+        selected_challenge = None
+        
+        for challenge in available_challenges:
+            wallet, is_dev = self._select_wallet(
+                pool_id,
+                challenge,
+                desired_dev_wallet,
+                sticky_address,
+                worker_id,
+                allow_creation=False  # Don't create yet, just try existing wallets
+            )
+            if wallet:
+                selected_challenge = challenge
+                break
+        
+        # Only create new wallet if no existing wallet available for ANY challenge
+        if not wallet:
+            # Use oldest challenge for new wallet creation
+            selected_challenge = available_challenges[0]
+            wallet, is_dev = self._select_wallet(
+                pool_id,
+                selected_challenge,
+                desired_dev_wallet,
+                sticky_address,
+                worker_id,
+                allow_creation=True  # Now we can create
+            )
+        
+        if not wallet:
+            return None
         
         challenge = selected_challenge
             
         # Update sticky tracking for workers
         if worker_type == 'gpu' and not is_dev:
-            # Track sticky wallet AND challenge for GPU
+            # Track sticky wallet for GPU
             if worker_id not in self.gpu_sticky_wallets:
                  logging.debug(f"Coordinator: Assigned sticky wallet {wallet['address'][:8]} to GPU {worker_id}")
             self.gpu_sticky_wallets[worker_id] = wallet['address']
-            self.gpu_sticky_challenges[worker_id] = challenge['challenge_id']
         elif worker_type == 'cpu' and not is_dev:
             # Track sticky wallet for CPU
             if worker_id not in self.cpu_sticky_wallets:
@@ -352,11 +305,10 @@ class MiningCoordinator:
         return wallet_pool.allocate_wallet(pool_id, challenge_id)
 
     def clear_sticky_wallet(self, worker_id: int, worker_type: WorkerType = 'cpu') -> None:
-        """Clear the sticky wallet and challenge assignment for a worker."""
+        """Clear the sticky wallet assignment for a worker."""
         if worker_type == 'gpu' and worker_id in self.gpu_sticky_wallets:
             logging.debug(f"Coordinator: Clearing sticky wallet for GPU {worker_id}")
             del self.gpu_sticky_wallets[worker_id]
-            self.gpu_sticky_challenges.pop(worker_id, None)  # Also clear sticky challenge
         elif worker_type == 'cpu' and worker_id in self.cpu_sticky_wallets:
             logging.info(f"Coordinator: Clearing sticky wallet for CPU worker {worker_id}")
             del self.cpu_sticky_wallets[worker_id]
