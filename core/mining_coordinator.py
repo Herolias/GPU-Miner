@@ -90,15 +90,45 @@ class MiningCoordinator:
         if worker_type == 'cpu' and not desired_dev_wallet:
             sticky_address = self.cpu_sticky_wallets.get(worker_id)
         
-        # MULTI-CHALLENGE: Select optimal challenge BEFORE wallet allocation
-        # This allows allocate_wallet to properly filter wallets that solved this challenge
+        # SMART CHALLENGE SELECTION: Minimize wallet creation
         if not available_challenges:
             return None
         
-        # Pick best challenge from available list (lowest difficulty with cached ROM)
-        available_challenges.sort(key=lambda c: int(c['difficulty'], 16))
-        cached_challenges = [c for c in available_challenges if c['no_pre_mine'] in (cached_rom_keys or set())]
-        challenge = cached_challenges[0] if cached_challenges else available_challenges[0]
+        # Sort challenges by discovery time (oldest first) for normal operation
+        # Challenges have 'discovered_at' field from challenge_cache
+        available_challenges.sort(key=lambda c: c.get('discovered_at', ''))
+        
+        # Detect difficulty spike: newest challenge harder than oldest?
+        oldest_difficulty = int(available_challenges[0]['difficulty'], 16)
+        newest_difficulty = int(available_challenges[-1]['difficulty'], 16)
+        difficulty_increased = newest_difficulty > oldest_difficulty
+        
+        if difficulty_increased:
+            # DIFFICULTY SPIKE MODE: Prioritize clearing all lower-difficulty challenges
+            # This allows creating new wallets to quickly finish easier challenges
+            # before they expire
+            lower_diff_challenges = [
+                c for c in available_challenges 
+                if int(c['difficulty'], 16) == oldest_difficulty
+            ]
+            if lower_diff_challenges:
+                # Work on lowest difficulty challenges first, can create wallets
+                challenge = lower_diff_challenges[0]
+                logging.debug(f"Difficulty spike detected - prioritizing lower difficulty challenges")
+            else:
+                # All lower-difficulty challenges expired, return to normal mode
+                challenge = available_challenges[0]
+        else:
+            # NORMAL MODE: Maximize wallet reuse by working oldest→newest
+            # This prevents wallet explosion by exhausting all challenges with existing wallets
+            challenge = available_challenges[0]
+        
+        # Optimize: prefer cached ROM if available at same priority
+        if cached_rom_keys:
+            same_priority = [c for c in available_challenges if c['discovered_at'] == challenge.get('discovered_at')]
+            cached = [c for c in same_priority if c['no_pre_mine'] in cached_rom_keys]
+            if cached:
+                challenge = cached[0]
         
         # Now allocate wallet using STANDARD allocation with the selected challenge
         wallet, is_dev = self._select_wallet(
