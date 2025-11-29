@@ -559,7 +559,7 @@ class MinerManager:
             is_dev_solution=is_dev,
             current_challenge=current_challenge,
             num_workers=num_workers,
-            keep_wallet_on_fail=(worker_type == 'cpu')  # Keep wallet for CPU workers (Sticky)
+            keep_wallet_on_fail=True  # Keep wallets sticky for all workers (GPU and CPU)
         )
         
         # If CPU found a solution, clear the sticky wallet assignment so it picks a new one next time
