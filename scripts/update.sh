@@ -7,6 +7,10 @@ if ! command -v git &> /dev/null; then
     exit 1
 fi
 
+# Backup user config
+echo "Backing up configuration..."
+python3 scripts/migrate_config.py --backup
+
 # Stash local changes (like config.yaml edits)
 echo "Saving your local changes..."
 git stash push -m "Auto-stash before update"
@@ -18,22 +22,6 @@ if [ $? -ne 0 ]; then
     echo "Error: Failed to pull changes."
     exit 1
 fi
-
-# Restore local changes
-echo "Restoring your local changes..."
-git stash pop
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "WARNING: There may be conflicts between your config and the new version."
-    echo "Please check config.yaml and resolve any conflicts marked with <<<<<<<, =======, >>>>>>>"
-    echo ""
-fi
-
-# Update dependencies
-echo "Updating dependencies..."
-source venv/bin/activate
-pip install -r requirements.txt
-if [ $? -ne 0 ]; then
     echo "Error: Failed to update dependencies."
     exit 1
 fi

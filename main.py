@@ -40,15 +40,29 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Midnight/Defensio Miner")
     parser.add_argument("--cpu", action="store_true", help="Enable CPU mining")
-    parser.add_argument("--workers", type=int, default=1, help="Number of CPU workers (default: 1)")
+    parser.add_argument("--workers", type=int, default=None, help="Number of CPU workers (default: 1)")
     args = parser.parse_args()
     
     # Update config with CLI args
+    # Logic:
+    # 1. If --cpu is set, force enable CPU
+    # 2. If --workers is set, override workers count (if enabled via flag or config)
+    
     if args.cpu:
         config.data['cpu'] = config.data.get('cpu', {})
         config.data['cpu']['enabled'] = True
+        logging.info("CPU Mining Enabled via CLI flag")
+
+    if args.workers is not None:
+        config.data['cpu'] = config.data.get('cpu', {})
         config.data['cpu']['workers'] = args.workers
-        logging.info(f"CPU Mining Enabled: {args.workers} workers")
+        logging.info(f"CPU Workers set to {args.workers} via CLI flag")
+        
+    # Log final state
+    cpu_enabled = config.get('cpu.enabled', False)
+    if cpu_enabled:
+        workers = config.get('cpu.workers', 1)
+        logging.info(f"CPU Mining Active: {workers} workers")
 
     logging.info("=== GPU Miner Starting ===")
     logging.info(f"API Base: {config.get('api_base')}")
