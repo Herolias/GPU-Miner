@@ -10,10 +10,6 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-REM Backup user config
-echo Backing up configuration...
-python scripts\migrate_config.py --backup
-
 REM Stash local changes (like config.yaml edits)
 echo Saving your local changes...
 git stash push -m "Auto-stash before update"
@@ -32,12 +28,10 @@ echo Restoring your local changes...
 git stash pop
 if %errorlevel% neq 0 (
     echo.
-    echo WARNING: Git stash pop failed. Attempting to restore config from backup...
+    echo WARNING: There may be conflicts between your config and the new version.
+    echo Please check config.yaml and resolve any conflicts marked with <<<<<<<, =======, >>>>>>>
+    echo.
 )
-
-REM Restore config preferences
-echo Restoring configuration preferences...
-python scripts\migrate_config.py --restore
 
 REM Update dependencies
 echo Updating dependencies...

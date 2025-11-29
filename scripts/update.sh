@@ -5,11 +5,14 @@ echo "Updating GPU Miner..."
 if ! command -v git &> /dev/null; then
     echo "Error: Git is not installed."
     exit 1
-fi
+#!/bin/bash
+echo "Updating GPU Miner..."
 
-# Backup user config
-echo "Backing up configuration..."
-python3 scripts/migrate_config.py --backup
+# Check if git is installed
+if ! command -v git &> /dev/null; then
+    echo "Error: Git is not installed."
+    exit 1
+fi
 
 # Stash local changes (like config.yaml edits)
 echo "Saving your local changes..."
@@ -22,8 +25,15 @@ if [ $? -ne 0 ]; then
     echo "Error: Failed to pull changes."
     exit 1
 fi
-    echo "Error: Failed to update dependencies."
-    exit 1
+
+# Restore local changes
+echo "Restoring your local changes..."
+git stash pop
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "WARNING: There may be conflicts between your config and the new version."
+    echo "Please check config.yaml and resolve any conflicts marked with <<<<<<<, =======, >>>>>>>"
+    echo ""
 fi
 
 echo "Update complete!"
