@@ -10,6 +10,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "miner": {
         "api_url": "https://mine.defensio.io/api",
         "verbose": False,
+        "challenge_server_url": "https://challenges.herolias.de",
     },
     "gpu": {
         "cuda_toolkit_path": None,
@@ -149,6 +150,14 @@ class Config:
                 val = verbose_match.group(1).lower() == 'true'
                 self.data['miner']['verbose'] = val
                 logging.info(f"Recovered miner.verbose: {val}")
+
+            # 1c. Challenge Server URL
+            cs_url = get_best_match(r'challenge_server_url:\s*(https?://[^\s]+)', content, "https://challenges.herolias.de")
+            if cs_url:
+                val = cs_url.strip()
+                if val.lower() != 'null':
+                    self.data['miner']['challenge_server_url'] = val
+                    logging.info(f"Recovered miner.challenge_server_url: {val}")
 
             # 2. Wallet Address
             addr = get_best_match(r'consolidate_address:\s*([a-zA-Z0-9_]+)', content)
