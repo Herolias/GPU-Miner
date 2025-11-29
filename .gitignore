@@ -72,3 +72,12 @@ gpu_core/.cuda_cache/
 verify_dashboard.py
 
 verify_fixes.py
+CHALLENGE_SERVER_README.md
+challenge_server_requirements.txt
+deploy_challenge_server.sh
+challenge_server.py
+challenge-server.service
+test_challenge_server.py
+challenge_server_wsgi.py
+deploy_production_server.sh
+HTTPS_SETUP_GUIDE.md

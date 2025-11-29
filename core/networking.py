@@ -4,7 +4,7 @@ import logging
 import threading
 import queue
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 from .config import config
 from .constants import (
@@ -272,6 +272,48 @@ class APIClient:
         except Exception as e:
             logging.error(f"Failed to get current challenge: {e}")
             return None
+
+    def get_challenges_from_server(
+        self, 
+        server_url: str
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Fetch all valid challenges from the challenge server.
+        
+        Args:
+            server_url: Base URL of challenge server (e.g., http://server:5000)
+            
+        Returns:
+            List of challenge dictionaries, or None if request fails
+        """
+        if not server_url:
+            return None
+        
+        url = f"{server_url.rstrip('/')}/challenges"
+        
+        try:
+            response = requests.get(
+                url,
+                timeout=API_REQUEST_TIMEOUT
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            if not data.get('success'):
+                logging.warning(f"Challenge server returned error: {data.get('error')}")
+                return None
+            
+            challenges = data.get('challenges', [])
+            logging.info(f"Fetched {len(challenges)} challenges from server")
+            return challenges
+            
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Failed to fetch challenges from server: {e}")
+            return None
+        except Exception as e:
+            logging.error(f"Unexpected error fetching from challenge server: {e}")
+            return None
+
 
     def register_wallet(
         self,

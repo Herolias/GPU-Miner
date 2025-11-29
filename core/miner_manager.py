@@ -249,13 +249,27 @@ class MinerManager:
 
     def _poll_challenge_loop(self) -> None:
         """
-        Continuously poll for new challenges from the API.
+        Continuously poll for new challenges from the API or challenge server.
         
-        SMART POLLING:
-        Challenges only change at the top of the hour. If we have a valid challenge,
-        we can sleep until close to the next hour mark to save API calls.
+        SMART POLLING WITH SERVER SUPPORT:
+        - Tries to fetch from challenge server first (if configured)
+        - Falls back to regular API if server unavailable
+        - Challenge server provides 24h of challenges, API provides only latest
+        - Challenges only change at the top of the hour, so smart sleep is used
         """
         from datetime import datetime, timedelta
+        from .challenge_cache import challenge_cache
+        
+        # Get server configuration
+        server_url = config.get("miner.challenge_server_url")
+        server_available = server_url is not None
+        
+        if server_available:
+            logging.info(f"Challenge server configured: {server_url}")
+        
+        # Track last server fetch time
+        last_server_fetch = None
+        fetch_startup_complete = False
         
         while self.running:
             try:
@@ -264,7 +278,43 @@ class MinerManager:
                 next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
                 seconds_to_next_hour = (next_hour - now).total_seconds()
                 
-                # 2. Check if we can sleep (Smart Polling)
+                # 2. Determine if we should fetch from server
+                should_fetch_from_server = False
+                
+                if server_available:
+                    # Fetch on startup (only once)
+                    if not fetch_startup_complete:
+                        should_fetch_from_server = True
+                        fetch_startup_complete = True
+                    # Fetch every hour
+                    elif last_server_fetch is None or (now - last_server_fetch).total_seconds() >= 3600:
+                        should_fetch_from_server = True
+                
+                # 3. Try to fetch from challenge server first
+                if should_fetch_from_server:
+                    logging.info("Fetching challenges from challenge server...")
+                    challenges = api.get_challenges_from_server(server_url)
+                    
+                    if challenges:
+                        logging.info(f"Successfully fetched {len(challenges)} challenges from server")
+                        last_server_fetch = now
+                        
+                        # Register all challenges in cache
+                        for challenge in challenges:
+                            challenge_cache.register_challenge(challenge)
+                            
+                            # Update latest_challenge if this is newer
+                            with self.challenge_lock:
+                                if not self.latest_challenge or challenge.get('challenge_id') != self.latest_challenge.get('challenge_id'):
+                                    self.latest_challenge = challenge
+                                    db.register_challenge(challenge)
+                        
+                        # Cleanup expired
+                        challenge_cache.cleanup_expired()
+                    else:
+                        logging.warning("Failed to fetch from challenge server, will try regular API fallback")
+                
+                # 4. Check if we can sleep (Smart Polling)
                 # If we have a challenge AND we are more than 60s away from the hour
                 if self.latest_challenge and seconds_to_next_hour > 60:
                     # Sleep until 45s before the hour (buffer for clock drift/latency)
@@ -282,15 +332,18 @@ class MinerManager:
                             time.sleep(1)
                         continue
 
-                # 3. Poll API (Close to hour mark OR no challenge)
-                challenge = api.get_current_challenge()
-                if challenge:
-                    with self.challenge_lock:
-                        # Check if it's actually new
-                        if not self.latest_challenge or self.latest_challenge['challenge_id'] != challenge['challenge_id']:
-                            logging.info(f"New challenge detected: {challenge['challenge_id'][:8]}...")
-                            self.latest_challenge = challenge
-                            db.register_challenge(challenge)
+                # 5. Poll API (Close to hour mark OR no challenge OR server fetch failed)
+                # This is the fallback if server is unavailable or not configured
+                if not server_available or not self.latest_challenge:
+                    challenge = api.get_current_challenge()
+                    if challenge:
+                        with self.challenge_lock:
+                            # Check if it's actually new
+                            if not self.latest_challenge or self.latest_challenge['challenge_id'] != challenge['challenge_id']:
+                                logging.info(f"New challenge detected from API: {challenge['challenge_id'][:8]}...")
+                                self.latest_challenge = challenge
+                                db.register_challenge(challenge)
+                                challenge_cache.register_challenge(challenge)
                 
                 # Sleep standard interval (e.g. 10s) when actively polling
                 for _ in range(int(CHALLENGE_POLL_INTERVAL)):
@@ -300,6 +353,7 @@ class MinerManager:
             except Exception as e:
                 logging.error(f"Challenge polling error: {e}")
                 time.sleep(ERROR_SLEEP_DURATION)
+
 
     def _update_dashboard_loop(self) -> None:
         """Update dashboard display with current mining statistics."""

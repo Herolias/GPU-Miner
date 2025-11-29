@@ -231,10 +231,12 @@ class Dashboard:
             system_items = []
             
             # CPU
-            cpu_str = f"CPU: {self.sys_mon.cpu_load:>4.1f}%"
-            if self.sys_mon.cpu_temp > 0:
-                cpu_str += f" ({self.sys_mon.cpu_temp:.0f}°C)"
-            system_items.append(cpu_str)
+            cpu_enabled = config.get('cpu.enabled', False)
+            if cpu_enabled:
+                cpu_str = f"CPU: {self.sys_mon.cpu_load:>4.1f}%"
+                if self.sys_mon.cpu_temp > 0:
+                    cpu_str += f" ({self.sys_mon.cpu_temp:.0f}°C)"
+                system_items.append(cpu_str)
             
             # GPUs
             if self.sys_mon.gpus:
@@ -289,7 +291,10 @@ class Dashboard:
             else:
                 gpu_hr_str = f"{self.gpu_hashrate / 1_000_000:.2f} MH/s"
 
-            buffer.append(f"  Total Hashrate:    {CYAN}{hr_str}{RESET} (CPU: {cpu_hr_str} | GPU: {gpu_hr_str})")
+            if cpu_enabled:
+                buffer.append(f"  Total Hashrate:    {CYAN}{hr_str}{RESET} (CPU: {cpu_hr_str} | GPU: {gpu_hr_str})")
+            else:
+                buffer.append(f"  Total Hashrate:    {CYAN}{hr_str}{RESET}")
             
             # Solutions
             buffer.append(f"\n{BOLD}Solutions:{RESET}")
@@ -320,7 +325,7 @@ class Dashboard:
             elif self.last_solution:
                 ts, challenge_id = self.last_solution
                 buffer.append(f"{GREEN}{BOLD}Last Solution:{RESET} [{ts}] for Challenge {challenge_id}")
-            else:
+            elif show_issues:
                 buffer.append(f"{GREEN}Status: Running{RESET}")
             
             buffer.append(f"{CYAN}" + "="*60 + f"{RESET}")
