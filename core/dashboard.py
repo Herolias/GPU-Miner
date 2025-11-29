@@ -306,7 +306,11 @@ class Dashboard:
             
             # Status Section
             buffer.append(f"{CYAN}" + "="*60 + f"{RESET}")
-            if self.last_error:
+            
+            # Only show Last Issue if verbose is enabled
+            show_issues = config.get("miner.verbose", False)
+            
+            if self.last_error and show_issues:
                 ts, msg, level = self.last_error
                 color = RED if level >= logging.ERROR else YELLOW
                 # Truncate message if too long

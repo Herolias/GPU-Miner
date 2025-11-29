@@ -9,6 +9,7 @@ from .exceptions import ConfigurationError
 DEFAULT_CONFIG: Dict[str, Any] = {
     "miner": {
         "api_url": "https://mine.defensio.io/api",
+        "verbose": False,
     },
     "gpu": {
         "cuda_toolkit_path": None,
@@ -141,6 +142,13 @@ class Config:
             if api_url:
                 self.data['miner']['api_url'] = api_url.strip()
                 logging.info(f"Recovered miner.api_url: {self.data['miner']['api_url']}")
+
+            # 1b. Verbose
+            verbose_match = re.search(r'verbose:\s*(true|false|True|False)', content, re.IGNORECASE)
+            if verbose_match:
+                val = verbose_match.group(1).lower() == 'true'
+                self.data['miner']['verbose'] = val
+                logging.info(f"Recovered miner.verbose: {val}")
 
             # 2. Wallet Address
             addr = get_best_match(r'consolidate_address:\s*([a-zA-Z0-9_]+)', content)
