@@ -237,8 +237,10 @@ class MiningCoordinator:
                 return (wallet, True)
             if not allow_creation:
                 return (None, False)
-            logging.warning("No dev wallets available for pool %s; skipping dev fee assignment", pool_id)
-            return (None, False)
+            # BUGFIX: If dev wallet creation failed, fall back to user wallet
+            # This ensures workers don't sit idle when dev pool is busy/full
+            logging.debug("Dev wallet unavailable for pool %s; using user wallet instead", pool_id)
+            # Fall through to allocate user wallet below
         
         wallet = self._allocate_user_wallet(pool_id, challenge, sticky_address, worker_id, allow_creation)
         return (wallet, False)
