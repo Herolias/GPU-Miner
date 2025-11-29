@@ -84,6 +84,27 @@ DEFAULT_GPU_BATCH_SIZE = 1000000
 # Default warmup batch size for GPU
 DEFAULT_GPU_WARMUP_BATCH = 250000
 
+# GPU Blocks per SM (0 = Auto)
+GPU_BLOCKS_PER_SM = 0
+
+# GPU Enabled by default
+GPU_ENABLED = True
+
+# Maximum number of workers
+MAX_WORKERS = 1
+
+# Miner Name
+MINER_NAME = "GPU-Miner"
+
+# Miner Version
+MINER_VERSION = "0.1.1-beta"
+
+# Wallet File (Legacy)
+WALLET_FILE = "wallets.db"
+
+# Use JSON-based per-GPU wallet pools
+USE_JSON_WALLET_POOLS = True
+
 # Batch size for CPU mining (hashes per loop)
 CPU_MINING_BATCH_SIZE = 2000
 
@@ -95,7 +116,7 @@ DEFAULT_CPU_WORKERS = 1
 # ============================================================================
 
 # Challenge polling interval (seconds)
-CHALLENGE_POLL_INTERVAL = 1.0
+CHALLENGE_POLL_INTERVAL = 10.0
 
 # Dashboard update interval (seconds)
 DASHBOARD_UPDATE_INTERVAL = 1.0

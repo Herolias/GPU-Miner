@@ -29,7 +29,10 @@ from .constants import (
     WORKER_BUSY_SLEEP,
     ERROR_SLEEP_DURATION,
     WAITING_FOR_CHALLENGE_SLEEP,
-    DEV_WALLET_FLOOR
+    WAITING_FOR_CHALLENGE_SLEEP,
+    DEV_WALLET_FLOOR,
+    GPU_ENABLED,
+    USE_JSON_WALLET_POOLS
 )
 from .types import Challenge, MineResponse, WorkerType
 from .retry_manager import RetryManager
@@ -95,7 +98,7 @@ class MinerManager:
         handler = DashboardLogHandler(dashboard)
         root_logger.addHandler(handler)
 
-        gpu_enabled = config.get("gpu.enabled")
+        gpu_enabled = GPU_ENABLED
 
         # CRITICAL: Start GPU Engines FIRST (if enabled) and wait for them to be ready
         # This prevents CPU resource contention during GPU kernel compilation
@@ -245,17 +248,55 @@ class MinerManager:
         logging.info("Miner Manager stopped")
 
     def _poll_challenge_loop(self) -> None:
-        """Continuously poll for new challenges from the API."""
+        """
+        Continuously poll for new challenges from the API.
+        
+        SMART POLLING:
+        Challenges only change at the top of the hour. If we have a valid challenge,
+        we can sleep until close to the next hour mark to save API calls.
+        """
+        from datetime import datetime, timedelta
+        
         while self.running:
             try:
+                # 1. Calculate time to next hour
+                now = datetime.now()
+                next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+                seconds_to_next_hour = (next_hour - now).total_seconds()
+                
+                # 2. Check if we can sleep (Smart Polling)
+                # If we have a challenge AND we are more than 60s away from the hour
+                if self.latest_challenge and seconds_to_next_hour > 60:
+                    # Sleep until 45s before the hour (buffer for clock drift/latency)
+                    # But cap sleep at 60s chunks to check self.running frequently
+                    sleep_time = min(seconds_to_next_hour - 45, 60)
+                    
+                    if sleep_time > 5:
+                        # Only log occasionally to avoid spam
+                        if int(seconds_to_next_hour) % 300 < 60:  # Log roughly every 5 mins
+                            logging.debug(f"Smart polling: Waiting {int(seconds_to_next_hour)}s for next challenge...")
+                        
+                        # Sleep in 1s increments to allow quick shutdown
+                        for _ in range(int(sleep_time)):
+                            if not self.running: return
+                            time.sleep(1)
+                        continue
+
+                # 3. Poll API (Close to hour mark OR no challenge)
                 challenge = api.get_current_challenge()
                 if challenge:
                     with self.challenge_lock:
-                        self.latest_challenge = challenge
-                    
-                    db.register_challenge(challenge)
+                        # Check if it's actually new
+                        if not self.latest_challenge or self.latest_challenge['challenge_id'] != challenge['challenge_id']:
+                            logging.info(f"New challenge detected: {challenge['challenge_id'][:8]}...")
+                            self.latest_challenge = challenge
+                            db.register_challenge(challenge)
                 
-                time.sleep(CHALLENGE_POLL_INTERVAL)
+                # Sleep standard interval (e.g. 10s) when actively polling
+                for _ in range(int(CHALLENGE_POLL_INTERVAL)):
+                    if not self.running: return
+                    time.sleep(1)
+                    
             except Exception as e:
                 logging.error(f"Challenge polling error: {e}")
                 time.sleep(ERROR_SLEEP_DURATION)
@@ -333,7 +374,7 @@ class MinerManager:
         to replace the original 338-line monster method!
         """
         # Setup
-        use_json_pools = config.get("wallet.use_json_pools", False)
+        use_json_pools = USE_JSON_WALLET_POOLS
         num_gpus = len(self.gpu_processes) if self.gpu_processes else 0
         num_cpus = len(self.cpu_workers) if self.cpu_workers else 0
         

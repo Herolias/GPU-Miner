@@ -6,23 +6,19 @@ from .exceptions import ConfigurationError
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "miner": {
-        "name": "MidnightGPU",
-        "version": "1.0.0",
         "api_url": "https://mine.defensio.io/api",
-        "max_workers": 1,
     },
     "gpu": {
-        "enabled": True,
-        "batch_size": 1000000,  # Target hashes per batch
-        "blocks_per_sm": 0,     # 0 = Auto
-        "warmup_batch": 250000,
+        # "enabled": True,  # Now a constant
+        # "batch_size": 1000000,  # Now a constant
+        # "blocks_per_sm": 0,     # Now a constant
+        # "warmup_batch": 250000, # Now a constant
     },
     "cpu": {
         "enabled": False,
         "workers": 1,
     },
     "wallet": {
-        "file": "wallets.db",  # Deprecated: now using JSON wallet pools
         "consolidate_address": None,
     }
 }

@@ -4,6 +4,7 @@ import time
 import threading
 from datetime import datetime, timedelta
 from .config import config
+from .constants import MINER_VERSION
 
 # ANSI Colors
 CYAN = "\033[96m"
@@ -220,7 +221,7 @@ class Dashboard:
                                                        """)
             buffer.append(f"{RESET}")
             
-            version = config.get("miner.version", "1.0.0")
+            version = MINER_VERSION
             uptime = self._get_uptime()
             
             buffer.append(f"{BOLD}Version:{RESET} {version} | {BOLD}Uptime:{RESET} {uptime}")

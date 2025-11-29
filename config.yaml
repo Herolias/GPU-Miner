@@ -1,8 +1,4 @@
 gpu:
-  batch_size: 1000000
-  blocks_per_sm: 0
-  warmup_batch: 250000
-  enabled: true
   # Optional: Specify CUDA toolkit path if auto-detection fails
   # Examples:
   #   Windows: "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.8"
@@ -10,13 +6,7 @@ gpu:
   cuda_toolkit_path: null
 miner:
   api_url: https://mine.defensio.io/api
-  max_workers: 1
-  name: GPU-Miner
-  version: 0.1.1-beta
 wallet:
   consolidate_address: null
-  file: wallets.db
-  # Use JSON-based per-GPU wallet pools (recommended for multi-GPU setups)
-  use_json_pools: true
-  # Number of wallets to pre-generate per GPU
+  # Number of wallets to pre-generate per GPU, more wallets will be generated on demand
   wallets_per_gpu: 10
