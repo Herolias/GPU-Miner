@@ -137,6 +137,9 @@ class Dashboard:
         
         # System Monitor
         self.sys_mon = SystemMonitor()
+        
+        # Startup State
+        self.startup_complete = False
 
         # Console setup
         os.system('color') # Enable ANSI on Windows
@@ -187,22 +190,41 @@ class Dashboard:
             # Clear screen ANSI code at the start
             buffer.append('\033[H\033[J')
 
-            if self.loading_message:
+            # Check startup completion
+            if not self.startup_complete:
+                cpu_enabled = config.get('cpu.enabled', False)
+                # We assume GPU is always enabled for this miner
+                
+                cpu_ready = (not cpu_enabled) or (self.cpu_hashrate > 0)
+                gpu_ready = self.gpu_hashrate > 0
+                
+                if cpu_ready and gpu_ready:
+                    self.startup_complete = True
+            
+            # Show loading screen if not complete
+            if not self.startup_complete:
                 spinner = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
                 self._spinner_index += 1
                 
                 buffer.append(f"{CYAN}{BOLD}")
                 buffer.append(r"""
-   _____  _____   _    _     __  __  _____  _   _  ______  _____  
-  / ____||  __ \ | |  | |   |  \/  ||_   _|| \ | ||  ____||  __ \ 
- | |  __ | |__) || |  | |   | \  / |  | |  |  \| || |__   | |__) |
- | | |_ ||  ___/ | |  | |   | |\/| |  | |  | . ` ||  __|  |  _  / 
- | |__| || |     | |__| |   | |  | | _| |_ | |\  || |____ | | \ \ 
-  \_____||_|      \____/    |_|  |_||_____||_| \_||______||_|  \_\                                                                                                                               
+    _____  _____   _    _     __  __  _____  _   _  ______  _____  
+   / ____||  __ \ | |  | |   |  \/  ||_   _|| \ | ||  ____||  __ \ 
+  | |  __ | |__) || |  | |   | \  / |  | |  |  \| || |__   | |__) |
+  | | |_ ||  ___/ | |  | |   | |\/| |  | |  | . ` ||  __|  |  _  / 
+  | |__| || |     | |__| |   | |  | | _| |_ | |\  || |____ | | \ \ 
+   \_____||_|      \____/    |_|  |_||_____||_| \_||______||_|  \_\                                                                                                                               
 """)
                 buffer.append(f"{RESET}")
-                buffer.append(f"{BOLD}{spinner} {self.loading_message or 'Loading...'}{RESET}")
-                buffer.append("\nPlease wait while the CUDA kernels are being built...")
+                
+                msg = self.loading_message or "Initializing..."
+                buffer.append(f"{BOLD}{spinner} {msg}{RESET}")
+                
+                # Add context based on what we are waiting for
+                if self.gpu_hashrate == 0:
+                    buffer.append(f"\n{YELLOW}Waiting for GPU hashrate...{RESET}")
+                if cpu_enabled and self.cpu_hashrate == 0:
+                    buffer.append(f"{YELLOW}Waiting for CPU hashrate...{RESET}")
                 
                 # Print everything at once
                 sys.stdout.write('\n'.join(buffer))

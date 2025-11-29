@@ -87,6 +87,7 @@ class MinerManager:
         """Start the miner with GPU/CPU workers and management threads."""
         self.running = True
         logging.info("Starting Miner Manager...")
+        dashboard.set_loading("Initializing...")
         
         # Start Dashboard Thread early so loading screen can show
         self.dashboard_thread = threading.Thread(target=self._update_dashboard_loop, daemon=True)
@@ -195,7 +196,7 @@ class MinerManager:
             self.stop()
             return
 
-        dashboard.set_loading(None)
+        # dashboard.set_loading(None) # Removed: Let dashboard handle transition based on hashrate
     
     def _start_cpu_workers(self) -> None:
         """Start CPU mining workers."""
@@ -284,6 +285,7 @@ class MinerManager:
                 if server_available:
                     # Fetch on startup (only once)
                     if not fetch_startup_complete:
+                        dashboard.set_loading("Fetching Challenges...")
                         should_fetch_from_server = True
                         fetch_startup_complete = True
                     # Fetch every hour
@@ -578,6 +580,7 @@ class MinerManager:
     def _setup_wallet_pools(self, num_gpus: int, num_cpus: int) -> None:
         """Setup JSON-based per-GPU wallet pools."""
         logging.info("Using JSON-based per-GPU wallet pools")
+        dashboard.set_loading("Generating/Loading Wallets...")
         
         # Migrate existing DB wallets
         try:

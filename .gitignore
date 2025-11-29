@@ -81,3 +81,4 @@ test_challenge_server.py
 challenge_server_wsgi.py
 deploy_production_server.sh
 HTTPS_SETUP_GUIDE.md
+verify_loading_screen.py
