@@ -155,27 +155,6 @@ class MiningCoordinator:
         if not wallet:
             return None
         
-        # Optimize: prefer cached ROM if available at same priority
-        # (Only do this if we found a wallet without creating)
-        if cached_rom_keys and selected_challenge:
-            same_priority = [c for c in available_challenges if c.get('discovered_at') == selected_challenge.get('discovered_at')]
-            for c in same_priority:
-                if c['no_pre_mine'] in cached_rom_keys:
-                    # Try to get wallet for this cached challenge
-                    test_wallet, test_is_dev = self._select_wallet(
-                        pool_id,
-                        c,
-                        desired_dev_wallet,
-                        sticky_address,
-                        worker_id,
-                        allow_creation=False
-                    )
-                    if test_wallet:
-                        selected_challenge = c
-                        wallet = test_wallet
-                        is_dev = test_is_dev
-                        break
-        
         challenge = selected_challenge
             
         # Update sticky tracking if this is a CPU worker
