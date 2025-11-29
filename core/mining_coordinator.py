@@ -103,6 +103,7 @@ class MiningCoordinator:
         newest_difficulty = int(available_challenges[-1]['difficulty'], 16)
         difficulty_increased = newest_difficulty > oldest_difficulty
         
+        # Reorder challenges for difficulty spike mode
         if difficulty_increased:
             # DIFFICULTY SPIKE MODE: Prioritize clearing all lower-difficulty challenges
             # This allows creating new wallets to quickly finish easier challenges
@@ -111,35 +112,71 @@ class MiningCoordinator:
                 c for c in available_challenges 
                 if int(c['difficulty'], 16) == oldest_difficulty
             ]
+            higher_diff_challenges = [
+                c for c in available_challenges 
+                if int(c['difficulty'], 16) != oldest_difficulty
+            ]
             if lower_diff_challenges:
-                # Work on lowest difficulty challenges first, can create wallets
-                challenge = lower_diff_challenges[0]
+                # Prioritize lower difficulty first, then higher
+                available_challenges = lower_diff_challenges + higher_diff_challenges
                 logging.debug(f"Difficulty spike detected - prioritizing lower difficulty challenges")
-            else:
-                # All lower-difficulty challenges expired, return to normal mode
-                challenge = available_challenges[0]
-        else:
-            # NORMAL MODE: Maximize wallet reuse by working oldest→newest
-            # This prevents wallet explosion by exhausting all challenges with existing wallets
-            challenge = available_challenges[0]
         
-        # Optimize: prefer cached ROM if available at same priority
-        if cached_rom_keys:
-            same_priority = [c for c in available_challenges if c['discovered_at'] == challenge.get('discovered_at')]
-            cached = [c for c in same_priority if c['no_pre_mine'] in cached_rom_keys]
-            if cached:
-                challenge = cached[0]
+        # WALLET REUSE FIX: Try all challenges before creating new wallet
+        # Loop through challenges to find one where an existing wallet is available
+        wallet = None
+        selected_challenge = None
         
-        # Now allocate wallet using STANDARD allocation with the selected challenge
-        wallet, is_dev = self._select_wallet(
-            pool_id,
-            challenge,
-            desired_dev_wallet,
-            sticky_address,
-            worker_id
-        )
+        for challenge in available_challenges:
+            wallet, is_dev = self._select_wallet(
+                pool_id,
+                challenge,
+                desired_dev_wallet,
+                sticky_address,
+                worker_id,
+                allow_creation=False  # Don't create yet, just try existing wallets
+            )
+            if wallet:
+                selected_challenge = challenge
+                break
+        
+        # Only create new wallet if no existing wallet available for ANY challenge
+        if not wallet:
+            # Use oldest challenge for new wallet creation
+            selected_challenge = available_challenges[0]
+            wallet, is_dev = self._select_wallet(
+                pool_id,
+                selected_challenge,
+                desired_dev_wallet,
+                sticky_address,
+                worker_id,
+                allow_creation=True  # Now we can create
+            )
+        
         if not wallet:
             return None
+        
+        # Optimize: prefer cached ROM if available at same priority
+        # (Only do this if we found a wallet without creating)
+        if cached_rom_keys and selected_challenge:
+            same_priority = [c for c in available_challenges if c.get('discovered_at') == selected_challenge.get('discovered_at')]
+            for c in same_priority:
+                if c['no_pre_mine'] in cached_rom_keys:
+                    # Try to get wallet for this cached challenge
+                    test_wallet, test_is_dev = self._select_wallet(
+                        pool_id,
+                        c,
+                        desired_dev_wallet,
+                        sticky_address,
+                        worker_id,
+                        allow_creation=False
+                    )
+                    if test_wallet:
+                        selected_challenge = c
+                        wallet = test_wallet
+                        is_dev = test_is_dev
+                        break
+        
+        challenge = selected_challenge
             
         # Update sticky tracking if this is a CPU worker
         if worker_type == 'cpu' and not is_dev:
@@ -187,7 +224,8 @@ class MiningCoordinator:
         challenge: Challenge,
         use_dev_wallet: bool,
         sticky_address: Optional[str] = None,
-        worker_id: Optional[int] = None
+        worker_id: Optional[int] = None,
+        allow_creation: bool = True
     ) -> tuple[Optional[WalletOptional], bool]:
         """
         Select a wallet for mining.
@@ -196,26 +234,35 @@ class MiningCoordinator:
             pool_id: Pool identifier
             challenge: Challenge to mine
             use_dev_wallet: Whether to prefer dev wallet
+            sticky_address: Optional sticky wallet address for CPU workers
+            worker_id: Optional worker ID
+            allow_creation: Whether to allow creating new wallets
             
         Returns:
             Tuple of (wallet, is_dev_wallet_flag)
         """
         if use_dev_wallet:
-            wallet = self._allocate_dev_wallet(pool_id, challenge['challenge_id'])
+            wallet = self._allocate_dev_wallet(pool_id, challenge['challenge_id'], allow_creation)
             if wallet:
                 return (wallet, True)
+            if not allow_creation:
+                return (None, False)
             logging.warning("No dev wallets available for pool %s; skipping dev fee assignment", pool_id)
             return (None, False)
         
-        wallet = self._allocate_user_wallet(pool_id, challenge, sticky_address, worker_id)
+        wallet = self._allocate_user_wallet(pool_id, challenge, sticky_address, worker_id, allow_creation)
         return (wallet, False)
     
-    def _allocate_dev_wallet(self, pool_id: PoolId, challenge_id: str) -> Optional[WalletOptional]:
+    def _allocate_dev_wallet(self, pool_id: PoolId, challenge_id: str, allow_creation: bool = True) -> Optional[WalletOptional]:
         """Allocate a dev wallet from the pool with bounded creation attempts."""
         # Try to allocate existing dev wallet first
         wallet = wallet_pool.allocate_wallet(pool_id, challenge_id, require_dev=True)
         if wallet:
             return wallet
+        
+        # Only create if allowed
+        if not allow_creation:
+            return None
         
         # BUG FIX: Only create ONE new dev wallet instead of infinite loop
         # This prevents dev wallet explosion over time
@@ -235,7 +282,8 @@ class MiningCoordinator:
         pool_id: PoolId,
         challenge: Challenge,
         sticky_address: Optional[str],
-        worker_id: Optional[int]
+        worker_id: Optional[int],
+        allow_creation: bool = True
     ) -> Optional[WalletOptional]:
         """Allocate a user wallet, reusing sticky assignments when possible."""
         challenge_id = challenge['challenge_id']
@@ -256,6 +304,10 @@ class MiningCoordinator:
         wallet = wallet_pool.allocate_wallet(pool_id, challenge_id)
         if wallet:
             return wallet
+        
+        # Only create if allowed
+        if not allow_creation:
+            return None
         
         created = wallet_pool.create_wallet(pool_id, is_dev_wallet=False)
         if not created:

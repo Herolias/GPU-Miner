@@ -26,7 +26,7 @@ git stash pop
 - **CUDA Toolkit 11.8+** ([Download](https://developer.nvidia.com/cuda-downloads))
 
 ### Finding GPU Servers
-I recommend using [Vast.ai](https://cloud.vast.ai/?ref_id=352454) for finding GPU servers. They have linux servers with almost all dependencies preinstalled (Select CUDA as template) and offer really good prices.
+I recommend using [Vast.ai](https://cloud.vast.ai/?ref_id=352454) for finding GPU servers. I made a [template](https://cloud.vast.ai/?ref_id=352454&creator_id=352454&name=Herolias%20GPU%20Miner) with almost all dependencies preinstalled so the miner should work out of the box and they offer really good prices. Make sure to sort by Tflops/$/Hr and look at the Tflops value to get a good idea of the performance. You can of course also run the miner on your own hardware.
 
 ### Installation
 
