@@ -347,10 +347,16 @@ class MinerManager:
                                 db.register_challenge(challenge)
                                 challenge_cache.register_challenge(challenge)
                 
+
                 # Sleep standard interval (e.g. 10s) when actively polling
                 for _ in range(int(CHALLENGE_POLL_INTERVAL)):
                     if not self.running: return
                     time.sleep(1)
+                
+                # Cleanup expired challenges after each polling cycle
+                # This ensures removal even when server is not being used
+                from .challenge_cache import challenge_cache
+                challenge_cache.cleanup_expired()
                     
             except Exception as e:
                 logging.error(f"Challenge polling error: {e}")
@@ -465,8 +471,9 @@ class MinerManager:
                     from .challenge_cache import challenge_cache
                     challenge_cache.register_challenge(latest_challenge)
                     
-                    # Periodically cleanup expired challenges
-                    if req_id % 100 == 0:
+                    # Periodically cleanup expired challenges (every 10 requests instead of 100)
+                    # This ensures expired challenges are removed promptly
+                    if req_id % 10 == 0:
                         challenge_cache.cleanup_expired()
                 
                 # 2. Get all valid challenges (skip those expiring in <1h)

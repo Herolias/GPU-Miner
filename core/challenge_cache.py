@@ -93,9 +93,12 @@ class ChallengeCache:
                 logging.debug(f"Found {len(valid)} valid challenges (min {min_time_remaining_hours}h remaining)")
                 return valid
     
-    def cleanup_expired(self) -> int:
+    def cleanup_expired(self, min_time_remaining_hours: float = 1.0) -> int:
         """
-        Remove expired challenges from cache.
+        Remove expired challenges and those expiring soon from cache.
+        
+        Args:
+            min_time_remaining_hours: Minimum hours until expiry (default: 1.0)
         
         Returns:
             Number of challenges removed
@@ -104,17 +107,35 @@ class ChallengeCache:
             with self._file_lock:
                 data = self._load()
                 now = datetime.now()
+                cutoff = now + timedelta(hours=min_time_remaining_hours)
                 
                 before_count = len(data['challenges'])
-                data['challenges'] = [
-                    c for c in data['challenges']
-                    if datetime.fromisoformat(c['expires_at']) > now
-                ]
+                
+                # Keep challenges that expire AFTER the cutoff (have enough time remaining)
+                # Remove challenges that expire BEFORE or AT the cutoff (expired or <1h remaining)
+                kept_challenges = []
+                removed_challenges = []
+                
+                for c in data['challenges']:
+                    expires = datetime.fromisoformat(c['expires_at'])
+                    if expires > cutoff:
+                        kept_challenges.append(c)
+                    else:
+                        removed_challenges.append(c)
+                
+                data['challenges'] = kept_challenges
                 removed = before_count - len(data['challenges'])
                 
                 if removed > 0:
                     self._save(data)
-                    logging.info(f"Removed {removed} expired challenges from cache")
+                    logging.info(f"Removed {removed} challenges from cache (expired or expiring in <{min_time_remaining_hours}h)")
+                    for c in removed_challenges:
+                        expires = datetime.fromisoformat(c['expires_at'])
+                        time_until_expiry = (expires - now).total_seconds() / 3600
+                        if time_until_expiry < 0:
+                            logging.debug(f"  - Challenge {c['challenge_id'][:8]}... (expired {abs(time_until_expiry):.1f}h ago)")
+                        else:
+                            logging.debug(f"  - Challenge {c['challenge_id'][:8]}... (expires in {time_until_expiry:.1f}h)")
                 
                 return removed
     
