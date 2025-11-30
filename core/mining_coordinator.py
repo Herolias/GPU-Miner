@@ -287,11 +287,25 @@ class MiningCoordinator:
             )
             wallet = wallet_pool.get_wallet(pool_id, sticky_address)
             if wallet:
-                if wallet.get('current_challenge') != challenge_id:
-                    wallet_pool.reuse_wallet(pool_id, sticky_address, challenge_id)
-                    wallet['current_challenge'] = challenge_id
-                return wallet
-            logging.warning("Sticky wallet %s not found via get_wallet", sticky_address[:8])
+                # Check if wallet already solved this challenge
+                solved_challenges = wallet.get('solved_challenges', [])
+                if challenge_id in solved_challenges:
+                    logging.debug(
+                        "Sticky wallet %s already solved %s, clearing sticky and allocating new wallet",
+                        sticky_address[:8],
+                        challenge_id[:8]
+                    )
+                    # Don't use this wallet - fall through to normal allocation
+                    sticky_address = None
+                else:
+                    # Wallet can be reused for this challenge
+                    if wallet.get('current_challenge') != challenge_id:
+                        wallet_pool.reuse_wallet(pool_id, sticky_address, challenge_id)
+                        wallet['current_challenge'] = challenge_id
+                    return wallet
+            
+            if sticky_address:  # Only log if we haven't cleared it above
+                logging.warning("Sticky wallet %s not found via get_wallet", sticky_address[:8])
         
         wallet = wallet_pool.allocate_wallet(pool_id, challenge_id)
         if wallet:
