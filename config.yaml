@@ -8,7 +8,7 @@ miner:
   api_url: https://mine.defensio.io/api
   # Optional: Challenge server URL for fetching historical challenges
   challenge_server_url: https://challenges.herolias.de
-  verbose: false
+  verbose: true
 wallet:
   consolidate_address: null
   # Number of wallets to pre-generate per GPU, more wallets will be generated on demand

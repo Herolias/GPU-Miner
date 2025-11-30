@@ -140,8 +140,6 @@ class Dashboard:
         
         # Startup State
         self.startup_complete = False
-        self.startup_timeout_seconds = 300  # 5 minutes timeout
-        self.startup_forced = False  # Track if we forced completion due to timeout
 
         # Console setup
         os.system('color') # Enable ANSI on Windows
@@ -195,31 +193,13 @@ class Dashboard:
             # Check startup completion
             if not self.startup_complete:
                 cpu_enabled = config.get('cpu.enabled', False)
-                uptime_seconds = (datetime.now() - self.start_time).total_seconds()
+                # We assume GPU is always enabled for this miner
                 
-                # Multiple completion paths for robustness:
-                # 1. Normal: Both CPU and GPU have hashrate
                 cpu_ready = (not cpu_enabled) or (self.cpu_hashrate > 0)
                 gpu_ready = self.gpu_hashrate > 0
-                normal_startup = cpu_ready and gpu_ready
                 
-                # 2. Timeout: Force completion after timeout to prevent infinite loading
-                timeout_exceeded = uptime_seconds >= self.startup_timeout_seconds
-                
-                # 3. Partial success: At least one worker is hashing (better than stuck)
-                partial_success = (uptime_seconds >= 60) and (self.cpu_hashrate > 0 or self.gpu_hashrate > 0)
-                
-                if normal_startup:
+                if cpu_ready and gpu_ready:
                     self.startup_complete = True
-                    logging.info("Startup complete (normal)")
-                elif timeout_exceeded:
-                    self.startup_complete = True
-                    self.startup_forced = True
-                    logging.warning(f"Startup forced after {self.startup_timeout_seconds}s timeout")
-                elif partial_success:
-                    self.startup_complete = True
-                    self.startup_forced = True
-                    logging.warning("Startup completed with partial success (at least one worker running)")
             
             # Show loading screen if not complete
             if not self.startup_complete:
@@ -237,82 +217,19 @@ class Dashboard:
 """)
                 buffer.append(f"{RESET}")
                 
-                # Show uptime and timeout info
-                uptime_seconds = (datetime.now() - self.start_time).total_seconds()
-                uptime_str = f"{int(uptime_seconds)}s elapsed"
-                
-                timeout_remaining = self.startup_timeout_seconds - uptime_seconds
-                if timeout_remaining <= 60:
-                    timeout_str = f" (auto-completing in {int(timeout_remaining)}s)"
-                else:
-                    timeout_str = ""
-                
                 msg = self.loading_message or "Initializing..."
-                buffer.append(f"{BOLD}{spinner} {msg}{RESET} ({uptime_str}{timeout_str})")
-                buffer.append("")
+                buffer.append(f"{BOLD}{spinner} {msg}{RESET}")
                 
-                # Show initialization progress
-                buffer.append(f"{BOLD}Status:{RESET}")
-                
-                # GPU status
-                if self.gpu_hashrate > 0:
-                    if self.gpu_hashrate < 1_000_000:
-                        gpu_hr = f"{self.gpu_hashrate / 1_000:.2f} KH/s"
-                    else:
-                        gpu_hr = f"{self.gpu_hashrate / 1_000_000:.2f} MH/s"
-                    buffer.append(f"  {GREEN}✓{RESET} GPU: {gpu_hr}")
-                else:
-                    buffer.append(f"  {YELLOW}⏳{RESET} GPU: Initializing...")
-                
-                # CPU status
-                if cpu_enabled:
-                    if self.cpu_hashrate > 0:
-                        if self.cpu_hashrate < 1_000_000:
-                            cpu_hr = f"{self.cpu_hashrate / 1_000:.2f} KH/s"
-                        else:
-                            cpu_hr = f"{self.cpu_hashrate / 1_000_000:.2f} MH/s"
-                        buffer.append(f"  {GREEN}✓{RESET} CPU: {cpu_hr}")
-                    else:
-                        buffer.append(f"  {YELLOW}⏳{RESET} CPU: Starting workers...")
-                
-                # Show errors/warnings during loading (CRITICAL for debugging API outages)
-                if self.last_error:
-                    buffer.append("")
-                    buffer.append(f"{BOLD}Recent Issues:{RESET}")
-                    ts, msg, level = self.last_error
-                    color = RED if level >= logging.ERROR else YELLOW
-                    level_str = "ERROR" if level >= logging.ERROR else "WARNING"
-                    # Truncate long messages
-                    if len(msg) > 60:
-                        msg = msg[:57] + "..."
-                    buffer.append(f"  {color}[{ts}] {level_str}: {msg}{RESET}")
-                    buffer.append(f"  {YELLOW}💡 Check logs for details{RESET}")
-                
-                # Show helpful tips
-                buffer.append("")
-                if timeout_remaining > 60:
-                    buffer.append(f"{CYAN} Note: Startup will take up to 10 minutes on first run{RESET}")
-                else:
-                    buffer.append(f"{YELLOW}⏱ Auto-completing soon to prevent hanging...{RESET}")
+                # Add context based on what we are waiting for
+                if self.gpu_hashrate == 0:
+                    buffer.append(f"\n{YELLOW}Waiting for GPU hashrate...{RESET}")
+                if cpu_enabled and self.cpu_hashrate == 0:
+                    buffer.append(f"{YELLOW}Waiting for CPU hashrate...{RESET}")
                 
                 # Print everything at once
                 sys.stdout.write('\n'.join(buffer))
                 sys.stdout.flush()
                 return
-            
-            # Show banner if startup was forced (not normal completion)
-            if self.startup_forced:
-                buffer.append(f"{YELLOW}{BOLD}╔════════════════════════════════════════════════════════╗{RESET}")
-                buffer.append(f"{YELLOW}{BOLD}║  ⚠ STARTUP COMPLETED WITH WARNINGS                     ║{RESET}")
-                buffer.append(f"{YELLOW}{BOLD}║                                                        ║{RESET}")
-                buffer.append(f"{YELLOW}{BOLD}║  Not all workers started normally. Check:              ║{RESET}")
-                buffer.append(f"{YELLOW}{BOLD}║  • API connection status                               ║{RESET}")
-                buffer.append(f"{YELLOW}{BOLD}║  • GPU compilation output                              ║{RESET}")
-                buffer.append(f"{YELLOW}{BOLD}║  • Recent errors below                                 ║{RESET}")
-                buffer.append(f"{YELLOW}{BOLD}╚════════════════════════════════════════════════════════╝{RESET}")
-                buffer.append("")
-                # Only show banner once, then clear the flag
-                self.startup_forced = False
 
             # Header
             buffer.append(f"{CYAN}{BOLD}")
