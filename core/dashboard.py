@@ -291,7 +291,7 @@ class Dashboard:
                 # Show helpful tips
                 buffer.append("")
                 if timeout_remaining > 60:
-                    buffer.append(f"{CYAN}💡 Tip: Startup will auto-complete if needed{RESET}")
+                    buffer.append(f"{CYAN}💡 Tip: Startup will take up to 10 minutes on first run{RESET}")
                 else:
                     buffer.append(f"{YELLOW}⏱ Auto-completing soon to prevent hanging...{RESET}")
                 

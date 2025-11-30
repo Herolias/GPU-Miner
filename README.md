@@ -51,10 +51,6 @@ Edit `config.yaml` to customize settings:
 
 ```yaml
 gpu:
-  batch_size: 1000000
-  blocks_per_sm: 0
-  warmup_batch: 250000
-  enabled: true
   # Optional: Specify CUDA toolkit path if auto-detection fails
   # Examples:
   #   Windows: "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.8"
@@ -62,16 +58,12 @@ gpu:
   cuda_toolkit_path: null
 miner:
   api_url: https://mine.defensio.io/api
-  max_workers: 1
-  name: GPU-Miner
-  version: 0.0.5
+  # Optional: Challenge server URL for fetching historical challenges
+  challenge_server_url: https://challenges.herolias.de
 wallet:
   consolidate_address: enter_your_consolidation_address_here
-  file: wallets.db
-  # Use JSON-based per-GPU wallet pools (recommended for multi-GPU setups)
-  use_json_pools: true
-  # Number of wallets to pre-generate per GPU
-  wallets_per_gpu: 10
+  # Number of wallets to pre-generate per GPU, more wallets will be generated on demand
+  wallets_per_gpu: 30
 
 ```
 

@@ -11,4 +11,4 @@ miner:
 wallet:
   consolidate_address: null
   # Number of wallets to pre-generate per GPU, more wallets will be generated on demand
-  wallets_per_gpu: 10
+  wallets_per_gpu: 30
