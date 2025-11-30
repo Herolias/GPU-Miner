@@ -95,15 +95,16 @@ class ChallengeCache:
                         continue
                     
                     # Parse the ISO format timestamp from API
-                    # API format: "2025-11-30T18:59:00.000Z"
-                    latest_submission = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
+                    # API format: "2025-11-30T18:59:00.000Z" (UTC)
+                    latest_submission_utc = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
                     
-                    # Convert to local time for comparison
-                    # Note: datetime.now() returns local time, so we need to handle timezone
-                    # For simplicity, we'll compare by removing timezone info
-                    latest_submission = latest_submission.replace(tzinfo=None)
+                    # Convert UTC to local time for proper comparison with datetime.now()
+                    latest_submission_local = latest_submission_utc.astimezone()
                     
-                    if latest_submission > cutoff:
+                    # Remove timezone info for comparison (both are now in local time)
+                    latest_submission_local = latest_submission_local.replace(tzinfo=None)
+                    
+                    if latest_submission_local > cutoff:
                         valid.append(c)
                 
                 logging.debug(f"Found {len(valid)} valid challenges (min {min_time_remaining_hours}h remaining)")
@@ -140,11 +141,12 @@ class ChallengeCache:
                         removed_challenges.append(c)
                         continue
                     
-                    # Parse the ISO format timestamp from API
-                    latest_submission = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
-                    latest_submission = latest_submission.replace(tzinfo=None)
+                    # Parse the ISO format timestamp from API and convert UTC to local time
+                    latest_submission_utc = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
+                    latest_submission_local = latest_submission_utc.astimezone()
+                    latest_submission_local = latest_submission_local.replace(tzinfo=None)
                     
-                    if latest_submission > cutoff:
+                    if latest_submission_local > cutoff:
                         kept_challenges.append(c)
                     else:
                         removed_challenges.append(c)
@@ -158,9 +160,9 @@ class ChallengeCache:
                     for c in removed_challenges:
                         latest_submission_str = c.get('latest_submission', 'unknown')
                         try:
-                            latest_submission = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
-                            latest_submission = latest_submission.replace(tzinfo=None)
-                            time_until_expiry = (latest_submission - now).total_seconds() / 3600
+                            latest_submission_utc = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
+                            latest_submission_local = latest_submission_utc.astimezone().replace(tzinfo=None)
+                            time_until_expiry = (latest_submission_local - now).total_seconds() / 3600
                             if time_until_expiry < 0:
                                 logging.debug(f"  - Challenge {c['challenge_id'][:8]}... (expired {abs(time_until_expiry):.1f}h ago)")
                             else:
