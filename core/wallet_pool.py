@@ -457,6 +457,86 @@ class WalletPool:
                     
         return wallet_data
     
+    def create_wallets_batch(self, pool_id: PoolId, count: int = 20, is_dev_wallet: bool = False) -> int:
+        """
+        Create multiple wallets at once for efficiency (GPU optimization).
+        
+        This is particularly useful for GPU workers to reduce ROM switching overhead.
+        When a GPU worker needs new wallets, creating a batch of 20 ensures the ROM
+        stays loaded longer before needing to switch to a different challenge.
+        
+        Args:
+            pool_id: Pool identifier (GPU ID or CPU pool name)
+            count: Number of wallets to create (default: 20)
+            is_dev_wallet: Whether these wallets should be marked as dev wallets
+            
+        Returns:
+            Number of wallets successfully created
+        """
+        thread_lock = self._get_thread_lock(pool_id)
+        file_lock = self._get_file_lock(pool_id)
+        
+        wallet_label = "dev" if is_dev_wallet else "user"
+        logging.info(f"Creating batch of {count} {wallet_label} wallets for pool {pool_id}...")
+        
+        created_wallets = []
+        from .networking import api
+        
+        # Generate and register wallets
+        for i in range(count):
+            try:
+                # Generate wallet using centralized utility
+                wallet_data = wallet_utils.generate_wallet()
+                wallet_utils.sign_wallet_terms(wallet_data)
+                
+                # Add pool-specific fields
+                wallet_data['created_at'] = datetime.now().isoformat()
+                wallet_data['is_consolidated'] = False
+                wallet_data['in_use'] = False
+                wallet_data['current_challenge'] = None
+                wallet_data['solved_challenges'] = []
+                wallet_data['is_dev_wallet'] = is_dev_wallet
+                
+                # Register with API
+                if not api.register_wallet(wallet_data['address'], wallet_data['signature'], wallet_data['pubkey']):
+                    logging.warning(f"Failed to register wallet {i+1}/{count} with API, skipping")
+                    continue
+                
+                created_wallets.append(wallet_data)
+                
+            except Exception as e:
+                logging.error(f"Error creating wallet {i+1}/{count}: {e}")
+                continue
+        
+        # Add all successfully created wallets to pool at once
+        if created_wallets:
+            with thread_lock:
+                with file_lock:
+                    pool = self._load_pool(pool_id)
+                    
+                    if "wallets" not in pool:
+                        pool["wallets"] = []
+                    
+                    pool["wallets"].extend(created_wallets)
+                    self._save_pool(pool_id, pool)
+            
+            logging.info(f"Successfully created {len(created_wallets)}/{count} {wallet_label} wallets for pool {pool_id}")
+            
+            # Consolidate all wallets (outside lock)
+            for wallet_data in created_wallets:
+                if self._consolidate_wallet(wallet_data):
+                    # Update consolidation status
+                    with thread_lock:
+                        with file_lock:
+                            pool = self._load_pool(pool_id)
+                            for w in pool.get("wallets", []):
+                                if w["address"] == wallet_data["address"]:
+                                    w["is_consolidated"] = True
+                                    break
+                            self._save_pool(pool_id, pool)
+        
+        return len(created_wallets)
+    
     def _ensure_wallet_type(self, pool_id: PoolId, count: int, is_dev_wallet: bool) -> None:
         """Ensure pool has at least `count` wallets of the requested type."""
         thread_lock = self._get_thread_lock(pool_id)

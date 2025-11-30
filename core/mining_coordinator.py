@@ -315,10 +315,24 @@ class MiningCoordinator:
         if not allow_creation:
             return None
         
-        created = wallet_pool.create_wallet(pool_id, is_dev_wallet=False)
-        if not created:
+        # GPU OPTIMIZATION: Create batch of wallets for GPU workers to reduce ROM switching
+       # Check if this is a GPU pool (numeric ID) vs CPU pool (string "cpu")
+        is_gpu_pool = isinstance(pool_id, int)
+        
+        if is_gpu_pool:
+            # GPU workers: Create 20 wallets at once to minimize ROM switches
+            created_count = wallet_pool.create_wallets_batch(pool_id, count=20, is_dev_wallet=False)
+            if created_count > 0:
+                logging.info(f"Created batch of {created_count} wallets for GPU {pool_id}, reducing ROM switching")
+                # Now try to allocate one of the newly created wallets
+                return wallet_pool.allocate_wallet(pool_id, challenge_id)
             return None
-        return wallet_pool.allocate_wallet(pool_id, challenge_id)
+        else:
+            # CPU workers: Create single wallet (original behavior)
+            created = wallet_pool.create_wallet(pool_id, is_dev_wallet=False)
+            if not created:
+                return None
+            return wallet_pool.allocate_wallet(pool_id, challenge_id)
 
     def clear_sticky_wallet(self, worker_id: int, worker_type: WorkerType = 'cpu') -> None:
         """Clear the sticky wallet assignment for a worker."""
