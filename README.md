@@ -60,11 +60,11 @@ miner:
   api_url: https://mine.defensio.io/api
   # Optional: Challenge server URL for fetching historical challenges
   challenge_server_url: https://challenges.herolias.de
+  verbose: false
 wallet:
   consolidate_address: enter_your_consolidation_address_here
   # Number of wallets to pre-generate per GPU, more wallets will be generated on demand
   wallets_per_gpu: 30
-
 ```
 
 ### Running
