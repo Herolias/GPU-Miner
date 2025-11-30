@@ -97,7 +97,7 @@ MAX_WORKERS = 1
 MINER_NAME = "GPU-Miner"
 
 # Miner Version
-MINER_VERSION = "0.1.1-beta"
+MINER_VERSION = "0.1.1"
 
 # Wallet File (Legacy)
 WALLET_FILE = "wallets.db"
