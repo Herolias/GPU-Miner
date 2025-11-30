@@ -57,11 +57,13 @@ class ChallengeCache:
                 # - challenge_id, difficulty, no_pre_mine
                 # - latest_submission, no_pre_mine_hour (optional but needed for salt)
                 # Missing fields cause salt_prefix mismatch → solution validation failure
+                
+                # EXPIRY FIX: Use latest_submission from API instead of calculating our own expires_at
+                # The API controls when challenges expire, we should respect that timestamp
                 now = datetime.now()
                 entry = {
-                    **challenge,  # Copy all fields from original challenge
+                    **challenge,  # Copy all fields from original challenge (includes latest_submission)
                     'discovered_at': now.isoformat(),
-                    'expires_at': (now + timedelta(hours=24)).isoformat()
                 }
                 data['challenges'].append(entry)
                 
@@ -86,8 +88,22 @@ class ChallengeCache:
                 
                 valid = []
                 for c in data['challenges']:
-                    expires = datetime.fromisoformat(c['expires_at'])
-                    if expires > cutoff:
+                    # Use latest_submission from API (the authoritative expiry time)
+                    latest_submission_str = c.get('latest_submission')
+                    if not latest_submission_str:
+                        logging.warning(f"Challenge {c.get('challenge_id', 'unknown')[:8]} missing latest_submission field, skipping")
+                        continue
+                    
+                    # Parse the ISO format timestamp from API
+                    # API format: "2025-11-30T18:59:00.000Z"
+                    latest_submission = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
+                    
+                    # Convert to local time for comparison
+                    # Note: datetime.now() returns local time, so we need to handle timezone
+                    # For simplicity, we'll compare by removing timezone info
+                    latest_submission = latest_submission.replace(tzinfo=None)
+                    
+                    if latest_submission > cutoff:
                         valid.append(c)
                 
                 logging.debug(f"Found {len(valid)} valid challenges (min {min_time_remaining_hours}h remaining)")
@@ -117,8 +133,18 @@ class ChallengeCache:
                 removed_challenges = []
                 
                 for c in data['challenges']:
-                    expires = datetime.fromisoformat(c['expires_at'])
-                    if expires > cutoff:
+                    # Use latest_submission from API (the authoritative expiry time)
+                    latest_submission_str = c.get('latest_submission')
+                    if not latest_submission_str:
+                        logging.warning(f"Challenge {c.get('challenge_id', 'unknown')[:8]} missing latest_submission field, removing")
+                        removed_challenges.append(c)
+                        continue
+                    
+                    # Parse the ISO format timestamp from API
+                    latest_submission = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
+                    latest_submission = latest_submission.replace(tzinfo=None)
+                    
+                    if latest_submission > cutoff:
                         kept_challenges.append(c)
                     else:
                         removed_challenges.append(c)
@@ -130,12 +156,17 @@ class ChallengeCache:
                     self._save(data)
                     logging.info(f"Removed {removed} challenges from cache (expired or expiring in <{min_time_remaining_hours}h)")
                     for c in removed_challenges:
-                        expires = datetime.fromisoformat(c['expires_at'])
-                        time_until_expiry = (expires - now).total_seconds() / 3600
-                        if time_until_expiry < 0:
-                            logging.debug(f"  - Challenge {c['challenge_id'][:8]}... (expired {abs(time_until_expiry):.1f}h ago)")
-                        else:
-                            logging.debug(f"  - Challenge {c['challenge_id'][:8]}... (expires in {time_until_expiry:.1f}h)")
+                        latest_submission_str = c.get('latest_submission', 'unknown')
+                        try:
+                            latest_submission = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
+                            latest_submission = latest_submission.replace(tzinfo=None)
+                            time_until_expiry = (latest_submission - now).total_seconds() / 3600
+                            if time_until_expiry < 0:
+                                logging.debug(f"  - Challenge {c['challenge_id'][:8]}... (expired {abs(time_until_expiry):.1f}h ago)")
+                            else:
+                                logging.debug(f"  - Challenge {c['challenge_id'][:8]}... (expires in {time_until_expiry:.1f}h)")
+                        except:
+                            logging.debug(f"  - Challenge {c.get('challenge_id', 'unknown')[:8]}... (invalid timestamp)")
                 
                 return removed
     
