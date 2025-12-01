@@ -83,3 +83,6 @@ deploy_production_server.sh
 HTTPS_SETUP_GUIDE.md
 verify_loading_screen.py
 gpu_core/bin/windows/.cuda_cache/efca260018b0716504d52dd3d92eea18.cubin
+docker-compose.yml
+Dockerfile
+.dockerignore
