@@ -30,7 +30,7 @@ class ResponseProcessor:
     
     def __init__(self) -> None:
         """Initialize response processor with default stats."""
-        self.gpu_hashrate = 0.0
+        self.gpu_hashrates: Dict[int, float] = {} # Map worker_id -> hashrate
         self.cpu_hashrate = 0.0
         self.session_solutions = 0
         self.dev_session_solutions = 0
@@ -98,7 +98,7 @@ class ResponseProcessor:
                 pass
         
         # Update hashrate
-        self._update_hashrate(response, worker_type, num_workers)
+        self._update_hashrate(response, worker_type, worker_id, num_workers)
     
     def _handle_solution(
         self,
@@ -225,6 +225,7 @@ class ResponseProcessor:
         self,
         response: MineResponse,
         worker_type: WorkerType,
+        worker_id: int,
         num_workers: int
     ) -> None:
         """Update hashrate estimates based on worker response."""
@@ -238,28 +239,30 @@ class ResponseProcessor:
             return
         
         instant_hashrate = mining_utils.calculate_hashrate(hashes, duration)
-        total_hashrate = instant_hashrate * num_workers
         
         if worker_type == 'gpu':
-            self.gpu_hashrate = mining_utils.smooth_hashrate(
-                self.gpu_hashrate,
-                total_hashrate,
+            # For GPU, we track per-worker hashrate
+            current_val = self.gpu_hashrates.get(worker_id, 0.0)
+            self.gpu_hashrates[worker_id] = mining_utils.smooth_hashrate(
+                current_val,
+                instant_hashrate,
                 HASHRATE_EMA_WEIGHT_OLD
             )
         elif worker_type == 'cpu':
+            # For CPU, we track total hashrate (since workers are threads)
+            # We approximate total by multiplying instant by num_workers, but this is noisy
+            # Better: Just smooth the instant * num_workers as a rough total estimate
+            total_estimate = instant_hashrate * num_workers
             self.cpu_hashrate = mining_utils.smooth_hashrate(
                 self.cpu_hashrate,
-                total_hashrate,
+                total_estimate,
                 HASHRATE_EMA_WEIGHT_OLD
-            )
-            logging.debug(
-                f"CPU Hashrate Updated: {self.cpu_hashrate:.2f} "
-                f"(Instant: {instant_hashrate:.2f}, Total: {total_hashrate:.2f})"
             )
     
     def get_total_hashrate(self) -> float:
         """Get combined GPU + CPU hashrate."""
-        return self.gpu_hashrate + self.cpu_hashrate
+        total_gpu = sum(self.gpu_hashrates.values())
+        return total_gpu + self.cpu_hashrate
     
     def get_stats(self) -> Dict[str, any]:
         """
@@ -269,7 +272,8 @@ class ResponseProcessor:
             Dictionary with hashrate and solution counts
         """
         return {
-            'gpu_hashrate': self.gpu_hashrate,
+            'gpu_hashrates': self.gpu_hashrates.copy(), # Return dict of per-GPU hashrates
+            'gpu_hashrate': sum(self.gpu_hashrates.values()), # Total GPU hashrate for backward compat
             'cpu_hashrate': self.cpu_hashrate,
             'total_hashrate': self.get_total_hashrate(),
             'session_solutions': self.session_solutions,

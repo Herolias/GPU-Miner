@@ -9,6 +9,8 @@ miner:
   # Optional: Challenge server URL for fetching historical challenges
   challenge_server_url: https://challenges.herolias.de
   verbose: false
+  # Use the old dashboard layout
+  legacy_dashboard: false
 wallet:
   consolidate_address: null
   # Number of wallets to pre-generate per GPU, more wallets will be generated on demand

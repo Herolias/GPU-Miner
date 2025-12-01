@@ -295,6 +295,7 @@ class MinerManager:
                 # 3. Try to fetch from challenge server first
                 if should_fetch_from_server:
                     logging.info("Fetching challenges from challenge server...")
+                    dashboard.set_loading("Fetching from Challenge Server...")
                     challenges = api.get_challenges_from_server(server_url)
                     
                     if challenges:
@@ -315,6 +316,7 @@ class MinerManager:
                         challenge_cache.cleanup_expired()
                     else:
                         logging.warning("Failed to fetch from challenge server, will try regular API fallback")
+                        dashboard.set_loading("Server fetch failed, trying API...")
                 
                 # 4. Check if we can sleep (Smart Polling)
                 # If we have a challenge AND we are more than 60s away from the hour
@@ -337,6 +339,9 @@ class MinerManager:
                 # 5. Poll API (Close to hour mark OR no challenge OR server fetch failed)
                 # This is the fallback if server is unavailable or not configured
                 if not server_available or not self.latest_challenge:
+                    if not self.latest_challenge:
+                        dashboard.set_loading("Fetching from API...")
+                        
                     challenge = api.get_current_challenge()
                     if challenge:
                         with self.challenge_lock:
@@ -346,6 +351,8 @@ class MinerManager:
                                 self.latest_challenge = challenge
                                 db.register_challenge(challenge)
                                 challenge_cache.register_challenge(challenge)
+                    elif not self.latest_challenge:
+                         dashboard.set_loading("Waiting for API response...")
                 
 
                 # Sleep standard interval (e.g. 10s) when actively polling
@@ -360,6 +367,7 @@ class MinerManager:
                     
             except Exception as e:
                 logging.error(f"Challenge polling error: {e}")
+                dashboard.set_loading(f"API Error: {str(e)[:30]}...")
                 time.sleep(ERROR_SLEEP_DURATION)
 
 
@@ -374,6 +382,7 @@ class MinerManager:
                     hashrate=stats['total_hashrate'],
                     cpu_hashrate=stats['cpu_hashrate'],
                     gpu_hashrate=stats['gpu_hashrate'],
+                    gpu_hashrates=stats['gpu_hashrates'], # New per-GPU stats
                     session_sol=stats['session_solutions'],
                     all_time_sol=all_time,
                     wallet_sols=stats['wallet_solutions'],
@@ -483,11 +492,18 @@ class MinerManager:
                 if not valid_challenges:
                     self.active_wallet_count = 0
                     logging.warning("No valid challenges available (may be expiring soon)")
+                    dashboard.set_loading("Waiting for Challenges...")
                     time.sleep(WAITING_FOR_CHALLENGE_SLEEP)
                     continue
                 
                 # Update dashboard with challenge info
-                self.current_challenge_id = f"{len(valid_challenges)} active challenges"
+                # Update dashboard with challenge info
+                if latest_challenge:
+                    self.current_challenge_id = latest_challenge['challenge_id']
+                elif valid_challenges:
+                    self.current_challenge_id = valid_challenges[0]['challenge_id']
+                else:
+                    self.current_challenge_id = "Waiting..."
                 if valid_challenges:
                     # Show difficulty of easiest challenge
                     easiest = min(valid_challenges, key=lambda c: int(c['difficulty'], 16))
