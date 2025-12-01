@@ -98,6 +98,26 @@ class MinerManager:
         root_logger = logging.getLogger()
         handler = DashboardLogHandler(dashboard)
         root_logger.addHandler(handler)
+        
+        # Remove default console handler to prevent log spillage
+        # We only want logs to go to the dashboard or file, not stdout directly
+        import sys
+        from logging.handlers import RotatingFileHandler
+        
+        # Aggressively remove any handler that writes to stdout/stderr
+        # unless it is our specific DashboardLogHandler
+        for h in root_logger.handlers[:]:
+            # Keep DashboardLogHandler
+            if isinstance(h, DashboardLogHandler):
+                continue
+                
+            # Keep RotatingFileHandler (file logs are fine)
+            if isinstance(h, RotatingFileHandler):
+                continue
+                
+            # Remove everything else (StreamHandler, etc.)
+            # This ensures no "Loaded Binary GPU Engine" or other logs leak to console
+            root_logger.removeHandler(h)
 
         gpu_enabled = GPU_ENABLED
 
@@ -128,23 +148,6 @@ class MinerManager:
 
     # ... (skipping unchanged methods) ...
 
-    def _on_retry_success(
-        self,
-        wallet_addr: str,
-        challenge_id: str,
-        nonce: str,
-        is_dev: bool
-    ) -> None:
-        """Callback for successful retry."""
-        if is_dev:
-            self.response_processor.dev_session_solutions += 1
-        else:
-            self.response_processor.session_solutions += 1
-            if wallet_addr in self.response_processor.wallet_session_solutions:
-                self.response_processor.wallet_session_solutions[wallet_addr] += 1
-        
-        # Update dashboard status
-        dashboard.register_solution(challenge_id)
     
     def _start_gpu_engines(self) -> None:
         """Start GPU mining engines."""
@@ -507,7 +510,7 @@ class MinerManager:
                 if valid_challenges:
                     # Show difficulty of easiest challenge
                     easiest = min(valid_challenges, key=lambda c: int(c['difficulty'], 16))
-                    self.current_difficulty = easiest['difficulty'][:10] + "..."
+                    self.current_difficulty = easiest['difficulty'][:10]
                 
                 # 3. Get cached ROM keys for optimization
                 cached_rom_keys = self._get_cached_rom_keys()
@@ -685,11 +688,14 @@ class MinerManager:
         
         # Clear sticky wallet assignment when solution is found
         if response.get('found') and not is_dev:
+            # Register solution on dashboard
+            dashboard.register_solution(worker_type, worker_id, challenge_id, wallet_addr)
+            
             if worker_type == 'cpu':
                 self.mining_coordinator.clear_sticky_wallet(worker_id, 'cpu')
             elif worker_type == 'gpu':
                 self.mining_coordinator.clear_sticky_wallet(worker_id, 'gpu')
-    
+
     def _on_retry_success(
         self,
         wallet_addr: str,
@@ -706,7 +712,7 @@ class MinerManager:
                 self.response_processor.wallet_session_solutions[wallet_addr] += 1
         
         # Update dashboard status
-        dashboard.register_solution(challenge_id)
+        dashboard.register_solution("MANAGER", "RETRY", challenge_id, wallet_addr)
     
     def _on_retry_fatal(
         self,

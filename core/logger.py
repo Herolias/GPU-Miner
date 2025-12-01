@@ -9,6 +9,21 @@ from .constants import LOG_MAX_SIZE, LOG_BACKUP_COUNT, DEFAULT_LOG_FILE
 # Initialize colorama
 init(autoreset=True)
 
+class StreamToLogger:
+    """
+    Fake file-like stream object that redirects writes to a logger instance.
+    """
+    def __init__(self, logger, level):
+        self.logger = logger
+        self.level = level
+        self.linebuf = ''
+
+    def write(self, buf):
+        for line in buf.rstrip().splitlines():
+            self.logger.log(self.level, line.rstrip())
+
+    def flush(self):
+        pass
 
 class ColoredFormatter(logging.Formatter):
     """Custom formatter for colored console logs."""
@@ -34,7 +49,8 @@ def setup_logging(
     console_level: Optional[int] = None,
     enable_file_logging: bool = True,
     max_bytes: int = LOG_MAX_SIZE,
-    backup_count: int = LOG_BACKUP_COUNT
+    backup_count: int = LOG_BACKUP_COUNT,
+    enable_console_logging: bool = True
 ) -> None:
     """
     Configure the logging system for the application.
@@ -46,6 +62,7 @@ def setup_logging(
         enable_file_logging: Whether to enable file logging
         max_bytes: Maximum log file size before rotation
         backup_count: Number of backup log files to keep
+        enable_console_logging: Whether to enable console logging
         
     Example:
         >>> setup_logging(log_file="miner.log", level=logging.INFO, console_level=logging.WARNING)
@@ -58,17 +75,18 @@ def setup_logging(
     root_logger.handlers = []
 
     # Console Handler - only show warnings/errors by default
-    if console_level is None:
-        console_level = logging.WARNING
-        
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(console_level)
-    console_formatter = ColoredFormatter(
-        '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%H:%M:%S'
-    )
-    console_handler.setFormatter(console_formatter)
-    root_logger.addHandler(console_handler)
+    if enable_console_logging:
+        if console_level is None:
+            console_level = logging.WARNING
+            
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(console_level)
+        console_formatter = ColoredFormatter(
+            '%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
 
     # File Handler with rotation
     if enable_file_logging:
@@ -86,4 +104,3 @@ def setup_logging(
         root_logger.addHandler(file_handler)
 
     logging.info("Logging initialized")
-

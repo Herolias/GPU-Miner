@@ -25,11 +25,19 @@ class CPUWorker(mp.Process):
 
     def run(self):
         # Setup logging in this process
-        logging.basicConfig(
+        from core.logger import setup_logging
+        setup_logging(
+            log_file="miner.log",
             level=logging.DEBUG,
-            format=f'%(asctime)s - CPU-{self.worker_id} - %(levelname)s - %(message)s'
+            enable_console_logging=False
         )
         self.logger = logging.getLogger(f'cpu_worker_{self.worker_id}')
+        
+        # Redirect stdout/stderr to logger to prevent console leakage
+        from core.logger import StreamToLogger
+        sys.stdout = StreamToLogger(self.logger, logging.INFO)
+        sys.stderr = StreamToLogger(self.logger, logging.ERROR)
+        
         self.logger.info(f"CPU Worker {self.worker_id} started")
 
         try:

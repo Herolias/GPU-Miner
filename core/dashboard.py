@@ -5,6 +5,7 @@ import threading
 from datetime import datetime, timedelta
 from .config import config
 from .constants import MINER_VERSION
+from .challenge_cache import challenge_cache
 
 # ANSI Colors
 CYAN = "\033[96m"
@@ -84,6 +85,21 @@ class SystemMonitor:
                             self.cpu_temp = (kelvin_x10 / 10.0) - 273.15
                             break
                 except:
+                    pass
+            
+            if not found_temp:
+                # Try PowerShell as last resort for Windows
+                try:
+                    cmd = ["powershell", "-Command", "Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object -ExpandProperty CurrentTemperature"]
+                    # PowerShell can be slow, give it 2 seconds
+                    out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=2).decode().strip()
+                    lines = out.split('\n')
+                    for line in lines:
+                        if line.strip().isdigit():
+                            kelvin_x10 = float(line.strip())
+                            self.cpu_temp = (kelvin_x10 / 10.0) - 273.15
+                            break
+                except:
                     self.cpu_temp = 0.0 # Not available
         except:
             self.cpu_load = 0.0
@@ -122,13 +138,13 @@ class DashboardLogHandler(logging.Handler):
     def __init__(self, dashboard_instance):
         super().__init__()
         self.dashboard = dashboard_instance
-        self.setLevel(logging.WARNING) # Only capture WARNING and ERROR
+        self.setLevel(logging.INFO) # Capture INFO, WARNING, ERROR
 
     def emit(self, record):
         try:
             msg = self.format(record)
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self.dashboard.register_error(timestamp, msg, record.levelno)
+            self.dashboard.register_log(timestamp, msg, record.levelno)
         except Exception:
             self.handleError(record)
 
@@ -154,6 +170,7 @@ class Dashboard:
         
         # Status Tracking
         self.last_error = None # (timestamp, message, level)
+        self.last_log = None # (timestamp, message, level)
         self.last_solution = None # (timestamp, challenge_id)
         
         # System Monitor
@@ -161,17 +178,24 @@ class Dashboard:
         
         # Startup State
         self.startup_complete = False
+        self._uptime_reset = False
 
         # Console setup
         os.system('color') # Enable ANSI on Windows
 
-    def register_error(self, timestamp, message, level):
+    def register_log(self, timestamp, message, level):
         with self.lock:
-            self.last_error = (timestamp, message, level)
+            self.last_log = (timestamp, message, level)
+            if level >= logging.WARNING:
+                self.last_error = (timestamp, message, level)
 
-    def register_solution(self, challenge_id):
+    def register_error(self, timestamp, message, level):
+        # Legacy support
+        self.register_log(timestamp, message, level)
+
+    def register_solution(self, worker_type, worker_id, challenge_id, wallet_address):
         with self.lock:
-            self.last_solution = (datetime.now().strftime("%H:%M:%S"), challenge_id)
+            self.last_solution = (datetime.now().strftime("%H:%M:%S"), worker_type, worker_id, challenge_id, wallet_address)
             pass
 
     def update_stats(self, hashrate, cpu_hashrate, gpu_hashrate, gpu_hashrates, session_sol, all_time_sol, wallet_sols, active_wallets, challenge, difficulty):
@@ -252,9 +276,15 @@ class Dashboard:
     def render_fancy(self):
         """New 'Fancy' Dashboard with Boxed Layout"""
         # 1. Loading Screen (Reused logic)
+        # 1. Loading Screen (Reused logic)
         if not self._check_startup():
-            self.render_legacy()
+            self._render_loading_fancy()
             return
+
+        # Reset uptime on first render of dashboard
+        if not self._uptime_reset:
+            self.start_time = datetime.now()
+            self._uptime_reset = True
 
         self.sys_mon.update()
         
@@ -310,20 +340,25 @@ class Dashboard:
             # Difficulty
             diff_display = self.difficulty[:12] + "" if self.difficulty else "N/A"
             metrics.append(f"{BOLD}Difficulty:{RESET} {YELLOW}{diff_display}{RESET}")
+            
+            # Cached Challenges
+            valid_challenges = challenge_cache.get_valid_challenges()
+            cached_count = len(valid_challenges)
+            metrics.append(f"{BOLD}Cached:{RESET}     {CYAN}{cached_count} Challenges{RESET}")
             metrics.append("")
             
             # Performance
             metrics.append(f"{BOLD}PERFORMANCE{RESET}")
-            metrics.append(f"Session Sol: {GREEN}{self.session_solutions}{RESET}")
-            metrics.append(f"Total Sol:   {GREEN}{self.all_time_solutions}{RESET}")
+            metrics.append(f"Session Solutions: {GREEN}{self.session_solutions}{RESET}")
+            metrics.append(f"Total Solutions:   {GREEN}{self.all_time_solutions}{RESET}")
             
             # Efficiency
             elapsed_min = (datetime.now() - self.start_time).total_seconds() / 60.0
-            if elapsed_min > 0:
+            if elapsed_min > 5:
                 rate = self.session_solutions / elapsed_min
-                metrics.append(f"Rate:        {rate:.2f} Sol/m")
+                metrics.append(f"Rate:        {rate:.2f} Solutions/m")
             else:
-                metrics.append(f"Rate:        0.00 Sol/m")
+                metrics.append(f"Rate: will be calculated after 5 min")
 
             # Left Column (System)
             system = []
@@ -400,7 +435,7 @@ class Dashboard:
                  msg = f"{YELLOW}[WARNING] No consolidation address set!{RESET}"
                  buffer.append(f"{CYAN}│{RESET} {self._pad_ansi(msg, WIDTH-4)} {CYAN}│{RESET}")
             
-            # Last Log/Solution
+            # Last Log (Warning/Error or Status)
             show_issues = config.get("miner.verbose", False)
             last_msg = ""
             
@@ -408,14 +443,32 @@ class Dashboard:
                 ts, msg, level = self.last_error
                 color = RED if level >= logging.ERROR else YELLOW
                 last_msg = f"{color}[{ts}] {msg}{RESET}"
-            elif self.last_solution:
-                ts, challenge_id = self.last_solution
-                last_msg = f"{GREEN}[{ts}] Found solution for {challenge_id[:8]}...{RESET}"
             else:
                 last_msg = f"{GREEN}Running...{RESET}"
-                
-            # Truncate/Pad
+            
             buffer.append(f"{CYAN}│{RESET} {self._pad_ansi(last_msg, WIDTH-4)} {CYAN}│{RESET}")
+
+            # Latest Solution (Always show if exists)
+            if self.last_solution:
+                ts, w_type, w_id, chal_id, wallet = self.last_solution
+                w_type_upper = w_type.upper()
+                
+                # Format: [time] Sol found: **<CHALLENGE_ID> (<WORKER>)
+                # Example: [19:18:12] Sol found: **D12C06... (GPU0)
+                
+                # Calculate available space
+                prefix = f"[{ts}] Solution found: "
+                suffix = f" ({w_type_upper}{w_id})"
+                available_width = WIDTH - 4 - len(prefix) - len(suffix)
+                
+                if len(chal_id) <= available_width:
+                    display_chal = chal_id
+                else:
+                    # Truncate challenge ID if absolutely necessary, but prioritize it
+                    display_chal = chal_id[:available_width-3] + "..."
+                
+                sol_msg = f"{GREEN}{prefix}{display_chal}{suffix}{RESET}"
+                buffer.append(f"{CYAN}│{RESET} {self._pad_ansi(sol_msg, WIDTH-4)} {CYAN}│{RESET}")
             
             buffer.append(f"{CYAN}└{'─'*(WIDTH-2)}┘{RESET}")
             
@@ -461,13 +514,102 @@ class Dashboard:
                 
         return self.startup_complete
 
-    def _render_loading(self, buffer):
-        """Render loading screen (shared)."""
-        # ... (Reuse the logic from render_legacy, but we can't easily share code without refactoring)
-        # For now, I'll just copy the loading logic into render_fancy or call render_legacy for loading
-        # Calling render_legacy for loading is easiest!
-        self.render_legacy() 
-        return
+    def _render_loading_fancy(self):
+        """Render a fancy loading screen matching dashboard design."""
+        self.sys_mon.update()
+        
+        WIDTH = 74
+        buffer = []
+        buffer.append('\033[H\033[J') # Clear screen
+
+        # Top Border
+        buffer.append(f"{CYAN}┌{'─'*(WIDTH-2)}┐{RESET}")
+        
+        # Logo
+        for line in LOGO_FANCY.strip('\n').split('\n'):
+            padding = (WIDTH - 2 - len(line)) // 2
+            logo_line = " " * padding + f"{BOLD}{CYAN}{line}{RESET}" + " " * (WIDTH - 2 - len(line) - padding)
+            buffer.append(f"{CYAN}│{RESET}{logo_line}{CYAN}│{RESET}")
+        
+        buffer.append(f"{CYAN}├{'─'*(WIDTH-2)}┤{RESET}")
+        
+        # Info Bar
+        version = MINER_VERSION
+        info_line = f" {BOLD}GPU MINER v{version}{RESET}"
+        buffer.append(f"{CYAN}│{RESET}{self._pad_ansi(info_line, WIDTH-2)}{CYAN}│{RESET}")
+        
+        buffer.append(f"{CYAN}├{'─'*(WIDTH-2)}┤{RESET}")
+        
+        # Content
+        spinner = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
+        self._spinner_index += 1
+        
+        msg = self.loading_message or "Initializing..."
+        status_line = f" {BOLD}{spinner} Status:{RESET} {msg}"
+        buffer.append(f"{CYAN}│{RESET} {self._pad_ansi(status_line, WIDTH-4)} {CYAN}│{RESET}")
+        
+        buffer.append(f"{CYAN}│{RESET}{' '*(WIDTH-2)}{CYAN}│{RESET}") # Spacer
+        
+        # System Detection
+        gpu_count = len(self.sys_mon.gpus) if self.sys_mon.gpus else 0
+        cpu_enabled = config.get('cpu.enabled', False)
+        
+        det_line = f" GPUs Detected: {gpu_count}"
+        if cpu_enabled:
+            det_line += " | CPU Mining: Enabled"
+        buffer.append(f"{CYAN}│{RESET} {self._pad_ansi(det_line, WIDTH-4)} {CYAN}│{RESET}")
+        
+        # Waiting message
+        wait_msg = ""
+        if self.gpu_hashrate == 0:
+            wait_msg = " Waiting for GPU hashrate..."
+        elif cpu_enabled and self.cpu_hashrate == 0:
+            wait_msg = " Waiting for CPU hashrate..."
+            
+        if wait_msg:
+             buffer.append(f"{CYAN}│{RESET} {self._pad_ansi(YELLOW + wait_msg + RESET, WIDTH-4)} {CYAN}│{RESET}")
+        else:
+             buffer.append(f"{CYAN}│{RESET}{' '*(WIDTH-2)}{CYAN}│{RESET}")
+
+        # Errors / Logs (Inside the box)
+        
+        # 1. Latest Log (INFO/Status)
+        if self.last_log:
+            ts, log_msg, level = self.last_log
+            # Only show INFO here as "Status", errors are shown below
+            if level < logging.WARNING:
+                max_msg_len = WIDTH - 4 - 11
+                if len(log_msg) > max_msg_len:
+                    log_msg = log_msg[:max_msg_len-3] + "..."
+                line_content = f"{GREEN}[{ts}] {log_msg}{RESET}"
+                buffer.append(f"{CYAN}│{RESET} {self._pad_ansi(line_content, WIDTH-4)} {CYAN}│{RESET}")
+        
+        # 2. Latest Error/Warning (Separate line)
+        if self.last_error:
+            ts, err_msg, level = self.last_error
+            color = RED if level >= logging.ERROR else YELLOW
+            
+            # Truncate to fit
+            # "Error: " prefix = 7 chars
+            max_msg_len = WIDTH - 4 - 7
+            if len(err_msg) > max_msg_len:
+                err_msg = err_msg[:max_msg_len-3] + "..."
+                
+            line_content = f"{color}Error: {err_msg}{RESET}"
+            buffer.append(f"{CYAN}│{RESET} {self._pad_ansi(line_content, WIDTH-4)} {CYAN}│{RESET}")
+        
+        # Spacer if no logs
+        if not self.last_log and not self.last_error:
+             buffer.append(f"{CYAN}│{RESET}{' '*(WIDTH-2)}{CYAN}│{RESET}")
+
+        buffer.append(f"{CYAN}└{'─'*(WIDTH-2)}┘{RESET}")
+        
+        # Kernel Warning
+        buffer.append(f"\n{YELLOW}{BOLD}NOTE:{RESET} First time setup / kernel build may take up to 10 minutes.")
+        buffer.append(f"Please be patient if the miner seems stuck on initialization.")
+
+        sys.stdout.write('\n'.join(buffer))
+        sys.stdout.flush()
 
     def render_legacy(self):
         # Update system stats (non-blocking check inside)
@@ -520,13 +662,18 @@ class Dashboard:
                 if wait_msg:
                      buffer.append(f"{CYAN}│{RESET} {YELLOW}{wait_msg:<56}{RESET} {CYAN}│{RESET}")
 
-                buffer.append(f"{CYAN}└" + "─"*58 + "┘" + f"{RESET}")
-
-                # Show errors if any (CRITICAL FIX: Show errors even during loading)
+                # Show errors if any (Inside the box)
                 if self.last_error:
                     ts, err_msg, level = self.last_error
                     color = RED if level >= logging.ERROR else YELLOW
-                    buffer.append(f"\n{color}{BOLD}Latest Issue:{RESET} [{ts}] {err_msg}")
+                    # Truncate to fit box width (58 chars inner width, minus padding/label)
+                    # "Error: " is 7 chars. Available: 58 - 2 - 7 = 49
+                    if len(err_msg) > 48:
+                        err_msg = err_msg[:45] + "..."
+                    
+                    buffer.append(f"{CYAN}│{RESET} {color}Error:{RESET} {err_msg:<49} {CYAN}│{RESET}")
+
+                buffer.append(f"{CYAN}└" + "─"*58 + "┘" + f"{RESET}")
                 
                 # Print everything at once
                 sys.stdout.write('\n'.join(buffer))
@@ -595,6 +742,11 @@ class Dashboard:
             difficulty_display = self.difficulty if self.difficulty else "N/A"
             buffer.append(f"  Difficulty:        {YELLOW}{difficulty_display}{RESET}")
             
+            # Cached Challenges
+            valid_challenges = challenge_cache.get_valid_challenges()
+            cached_count = len(valid_challenges)
+            buffer.append(f"  Cached Challenges: {CYAN}{cached_count}{RESET}")
+            
             if self.total_hashrate < 1_000_000:
                 hr_str = f"{self.total_hashrate / 1_000:.2f} KH/s"
             else:
@@ -643,8 +795,9 @@ class Dashboard:
                     msg = msg[:47] + "..."
                 buffer.append(f"{color}{BOLD}Last Issue:{RESET} [{ts}] {msg}")
             elif self.last_solution:
-                ts, challenge_id = self.last_solution
-                buffer.append(f"{GREEN}{BOLD}Last Solution:{RESET} [{ts}] for Challenge {challenge_id}")
+                # Fix: Handle 5-element tuple (ts, w_type, w_id, chal_id, wallet)
+                ts, w_type, w_id, chal_id, wallet = self.last_solution
+                buffer.append(f"{GREEN}{BOLD}Last Solution:{RESET} [{ts}] for Challenge {chal_id}")
             elif show_issues:
                 buffer.append(f"{GREEN}Status: Running{RESET}")
             
