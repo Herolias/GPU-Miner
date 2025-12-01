@@ -384,44 +384,22 @@ class Dashboard:
 
             # GPUs
             if self.sys_mon.gpus:
-                num_gpus = len(self.sys_mon.gpus)
-                use_compact = num_gpus > 4
-                
                 for gpu in self.sys_mon.gpus:
                     gid = gpu['id']
+                    bar = self._draw_progress_bar(gpu['load'])
+                    
                     ghr = self.gpu_hashrates.get(gid, 0.0)
-                    
                     if ghr < 1_000_000:
-                        ghr_str = f"{ghr / 1_000:.1f}K" # Compact unit
+                        ghr_str = f"{ghr / 1_000:.1f} KH/s"
                     else:
-                        ghr_str = f"{ghr / 1_000_000:.1f}M" # Compact unit
+                        ghr_str = f"{ghr / 1_000_000:.1f} MH/s"
                     
-                    temp_str = f"{gpu['temp']:.0f}°C" if gpu['temp'] > 0 else ""
-                    
-                    if use_compact:
-                        # Compact Mode: Single line per GPU
-                        # Format: GPU0: 99% 12.5M 65°C
-                        # Width available: 26 chars
-                        # GPU0: (5) + 99% (4) + 12.5M (6) + 65C (4) + spaces (3) = 22 chars
+                    temp_str = ""
+                    if gpu['temp'] > 0:
+                        temp_str = f"{gpu['temp']:.0f}°C"
                         
-                        load_color = RED
-                        if gpu['load'] > 50: load_color = YELLOW
-                        if gpu['load'] > 90: load_color = GREEN
-                        
-                        line = f"GPU{gid}: {load_color}{gpu['load']:>3.0f}%{RESET} {ghr_str} {temp_str}"
-                        system.append(line)
-                    else:
-                        # Standard Mode: 2 lines per GPU
-                        bar = self._draw_progress_bar(gpu['load'])
-                        
-                        # Use fuller unit for standard
-                        if ghr < 1_000_000:
-                            ghr_str_std = f"{ghr / 1_000:.1f} KH/s"
-                        else:
-                            ghr_str_std = f"{ghr / 1_000_000:.1f} MH/s"
-                            
-                        system.append(f"GPU{gid}:{bar} {gpu['load']:>3.0f}%")
-                        system.append(f"     {ghr_str_std} {temp_str}")
+                    system.append(f"GPU{gid}:{bar} {gpu['load']:>3.0f}%")
+                    system.append(f"     {ghr_str} {temp_str}")
             else:
                 system.append("GPU: N/A")
 
