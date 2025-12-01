@@ -499,7 +499,7 @@ class Dashboard:
             # For now, I'll rely on the check inside render_legacy/fancy or move it to update()
             
             # Re-implement failsafe here to be safe
-            startup_timeout = config.get('miner.startup_timeout', 300)
+            startup_timeout = config.get('miner.startup_timeout', 900)
             if (datetime.now() - self.start_time).total_seconds() > startup_timeout:
                 self.startup_complete = True
                 self.register_error(
