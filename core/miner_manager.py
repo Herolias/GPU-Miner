@@ -259,9 +259,9 @@ class MinerManager:
         - Tries to fetch from challenge server first (if configured)
         - Falls back to regular API if server unavailable
         - Challenge server provides 24h of challenges, API provides only latest
-        - Challenges only change at the top of the hour, so smart sleep is used
+        - Fetches at the top of every UTC hour when new challenges are issued
         """
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         from .challenge_cache import challenge_cache
         
         # Get server configuration
@@ -271,16 +271,17 @@ class MinerManager:
         if server_available:
             logging.info(f"Challenge server configured: {server_url}")
         
-        # Track last server fetch time
-        last_server_fetch = None
+        # Track last successful server fetch (use UTC hour as marker)
+        last_fetched_utc_hour = None
         fetch_startup_complete = False
         
         while self.running:
             try:
-                # 1. Calculate time to next hour
-                now = datetime.now()
-                next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-                seconds_to_next_hour = (next_hour - now).total_seconds()
+                # 1. Get current UTC time
+                now_utc = datetime.now(timezone.utc)
+                current_utc_hour = now_utc.replace(minute=0, second=0, microsecond=0)
+                next_utc_hour = current_utc_hour + timedelta(hours=1)
+                seconds_to_next_hour = (next_utc_hour - now_utc).total_seconds()
                 
                 # 2. Determine if we should fetch from server
                 should_fetch_from_server = False
@@ -291,47 +292,66 @@ class MinerManager:
                         dashboard.set_loading("Fetching Challenges...")
                         should_fetch_from_server = True
                         fetch_startup_complete = True
-                    # Fetch every hour
-                    elif last_server_fetch is None or (now - last_server_fetch).total_seconds() >= 3600:
+                    # Fetch at the top of every UTC hour
+                    elif last_fetched_utc_hour is None or current_utc_hour > last_fetched_utc_hour:
                         should_fetch_from_server = True
+                        logging.info(f"New UTC hour detected ({current_utc_hour.strftime('%Y-%m-%d %H:00 UTC')}), fetching challenges...")
                 
                 # 3. Try to fetch from challenge server first
                 if should_fetch_from_server:
-                    logging.info("Fetching challenges from challenge server...")
                     dashboard.set_loading("Fetching from Challenge Server...")
                     challenges = api.get_challenges_from_server(server_url)
                     
-                    if challenges:
+                    if challenges and len(challenges) > 0:
                         logging.info(f"Successfully fetched {len(challenges)} challenges from server")
-                        last_server_fetch = now
+                        last_fetched_utc_hour = current_utc_hour
                         
                         # Register all challenges in cache
                         for challenge in challenges:
                             challenge_cache.register_challenge(challenge)
-                            
-                            # Update latest_challenge if this is newer
+                        
+                        # Update latest_challenge with the newest one
+                        # Sort by challenge_id or issued_at to get the latest
+                        challenges_sorted = sorted(challenges, key=lambda c: c.get('issued_at', ''), reverse=True)
+                        newest_challenge = challenges_sorted[0] if challenges_sorted else None
+                        
+                        if newest_challenge:
                             with self.challenge_lock:
-                                if not self.latest_challenge or challenge.get('challenge_id') != self.latest_challenge.get('challenge_id'):
-                                    self.latest_challenge = challenge
-                                    db.register_challenge(challenge)
+                                if not self.latest_challenge or newest_challenge.get('challenge_id') != self.latest_challenge.get('challenge_id'):
+                                    self.latest_challenge = newest_challenge
+                                    db.register_challenge(newest_challenge)
                         
                         # Cleanup expired
                         challenge_cache.cleanup_expired()
                     else:
-                        logging.warning("Failed to fetch from challenge server, will try regular API fallback")
+                        # Server fetch failed or returned empty - fallback to API
+                        logging.warning("Server returned no challenges or fetch failed, falling back to API")
                         dashboard.set_loading("Server fetch failed, trying API...")
+                        
+                        # Fallback: Fetch latest challenge from API
+                        challenge = api.get_current_challenge()
+                        if challenge:
+                            challenge_cache.register_challenge(challenge)
+                            with self.challenge_lock:
+                                if not self.latest_challenge or self.latest_challenge['challenge_id'] != challenge['challenge_id']:
+                                    logging.info(f"Fallback: Got latest challenge from API: {challenge['challenge_id'][:8]}...")
+                                    self.latest_challenge = challenge
+                                    db.register_challenge(challenge)
+                        
+                        # Mark as fetched even if fallback, to avoid spam
+                        last_fetched_utc_hour = current_utc_hour
                 
-                # 4. Check if we can sleep (Smart Polling)
-                # If we have a challenge AND we are more than 60s away from the hour
+                # 4. Smart Polling: Sleep until next hour if we have challenges
+                # If we have a challenge AND we are more than 60s away from the next hour
                 if self.latest_challenge and seconds_to_next_hour > 60:
-                    # Sleep until 45s before the hour (buffer for clock drift/latency)
+                    # Sleep until 45s before the next UTC hour (buffer for clock drift/latency)
                     # But cap sleep at 60s chunks to check self.running frequently
                     sleep_time = min(seconds_to_next_hour - 45, 60)
                     
                     if sleep_time > 5:
                         # Only log occasionally to avoid spam
                         if int(seconds_to_next_hour) % 300 < 60:  # Log roughly every 5 mins
-                            logging.debug(f"Smart polling: Waiting {int(seconds_to_next_hour)}s for next challenge...")
+                            logging.debug(f"Smart polling: Waiting {int(seconds_to_next_hour)}s for next UTC hour...")
                         
                         # Sleep in 1s increments to allow quick shutdown
                         for _ in range(int(sleep_time)):
@@ -339,7 +359,7 @@ class MinerManager:
                             time.sleep(1)
                         continue
 
-                # 5. Poll API (Close to hour mark OR no challenge OR server fetch failed)
+                # 5. Poll API (Close to hour mark OR no challenge OR server not configured)
                 # This is the fallback if server is unavailable or not configured
                 if not server_available or not self.latest_challenge:
                     if not self.latest_challenge:
@@ -372,6 +392,7 @@ class MinerManager:
                 logging.error(f"Challenge polling error: {e}")
                 dashboard.set_loading(f"API Error: {str(e)[:30]}...")
                 time.sleep(ERROR_SLEEP_DURATION)
+
 
 
     def _update_dashboard_loop(self) -> None:
@@ -488,9 +509,9 @@ class MinerManager:
                     if req_id % 10 == 0:
                         challenge_cache.cleanup_expired()
                 
-                # 2. Get all valid challenges (skip those expiring in <1h)
+                # 2. Get all valid challenges (skip those expiring in <3 min)
                 from .challenge_cache import challenge_cache
-                valid_challenges = challenge_cache.get_valid_challenges(min_time_remaining_hours=1.0)
+                valid_challenges = challenge_cache.get_valid_challenges()
                 
                 if not valid_challenges:
                     self.active_wallet_count = 0

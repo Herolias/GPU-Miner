@@ -70,7 +70,7 @@ class ChallengeCache:
                 self._save(data)
                 logging.info(f"Registered challenge {challenge['challenge_id'][:8]}... (difficulty: {challenge['difficulty'][:10]}...)")
     
-    def get_valid_challenges(self, min_time_remaining_hours: float = 1.0) -> List[Dict[str, Any]]:
+    def get_valid_challenges(self, min_time_remaining_hours: float = 0.05) -> List[Dict[str, Any]]:
         """
         Get challenges that are still valid with enough time remaining.
         
@@ -83,8 +83,10 @@ class ChallengeCache:
         with self._lock:
             with self._file_lock:
                 data = self._load()
-                now = datetime.now()
-                cutoff = now + timedelta(hours=min_time_remaining_hours)
+                # Use UTC for all time comparisons to avoid timezone conversion issues
+                from datetime import timezone
+                now_utc = datetime.now(timezone.utc)
+                cutoff_utc = now_utc + timedelta(hours=min_time_remaining_hours)
                 
                 valid = []
                 for c in data['challenges']:
@@ -98,19 +100,14 @@ class ChallengeCache:
                     # API format: "2025-11-30T18:59:00.000Z" (UTC)
                     latest_submission_utc = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
                     
-                    # Convert UTC to local time for proper comparison with datetime.now()
-                    latest_submission_local = latest_submission_utc.astimezone()
-                    
-                    # Remove timezone info for comparison (both are now in local time)
-                    latest_submission_local = latest_submission_local.replace(tzinfo=None)
-                    
-                    if latest_submission_local > cutoff:
+                    # Compare directly in UTC (no conversion needed)
+                    if latest_submission_utc > cutoff_utc:
                         valid.append(c)
                 
                 logging.debug(f"Found {len(valid)} valid challenges (min {min_time_remaining_hours}h remaining)")
                 return valid
     
-    def cleanup_expired(self, min_time_remaining_hours: float = 1.0) -> int:
+    def cleanup_expired(self, min_time_remaining_hours: float = 0.05) -> int:
         """
         Remove expired challenges and those expiring soon from cache.
         
@@ -123,8 +120,10 @@ class ChallengeCache:
         with self._lock:
             with self._file_lock:
                 data = self._load()
-                now = datetime.now()
-                cutoff = now + timedelta(hours=min_time_remaining_hours)
+                # Use UTC for all time comparisons to avoid timezone conversion issues
+                from datetime import timezone
+                now_utc = datetime.now(timezone.utc)
+                cutoff_utc = now_utc + timedelta(hours=min_time_remaining_hours)
                 
                 before_count = len(data['challenges'])
                 
@@ -141,12 +140,11 @@ class ChallengeCache:
                         removed_challenges.append(c)
                         continue
                     
-                    # Parse the ISO format timestamp from API and convert UTC to local time
+                    # Parse the ISO format timestamp from API (already in UTC)
                     latest_submission_utc = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
-                    latest_submission_local = latest_submission_utc.astimezone()
-                    latest_submission_local = latest_submission_local.replace(tzinfo=None)
                     
-                    if latest_submission_local > cutoff:
+                    # Compare directly in UTC (no conversion needed)
+                    if latest_submission_utc > cutoff_utc:
                         kept_challenges.append(c)
                     else:
                         removed_challenges.append(c)
@@ -161,8 +159,7 @@ class ChallengeCache:
                         latest_submission_str = c.get('latest_submission', 'unknown')
                         try:
                             latest_submission_utc = datetime.fromisoformat(latest_submission_str.replace('Z', '+00:00'))
-                            latest_submission_local = latest_submission_utc.astimezone().replace(tzinfo=None)
-                            time_until_expiry = (latest_submission_local - now).total_seconds() / 3600
+                            time_until_expiry = (latest_submission_utc - now_utc).total_seconds() / 3600
                             if time_until_expiry < 0:
                                 logging.debug(f"  - Challenge {c['challenge_id'][:8]}... (expired {abs(time_until_expiry):.1f}h ago)")
                             else:

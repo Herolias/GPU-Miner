@@ -46,6 +46,9 @@ class MiningCoordinator:
         self.cpu_sticky_wallets: Dict[int, str] = {}
         # Track deferred dev-fee assignments for CPU workers
         self.cpu_pending_dev_fee: Dict[int, bool] = {}
+        # Track current challenges being mined on each worker (for ROM stickiness)
+        self.gpu_current_challenges: Dict[int, str] = {}
+        self.cpu_current_challenges: Dict[int, str] = {}
     
     def dispatch_job(
         self,
@@ -138,6 +141,7 @@ class MiningCoordinator:
                 desired_dev_wallet,
                 sticky_address,
                 worker_id,
+                worker_type,  # Pass worker_type for dev wallet ROM stickiness
                 allow_creation=False  # Don't create yet, just try existing wallets
             )
             if wallet:
@@ -154,6 +158,7 @@ class MiningCoordinator:
                 desired_dev_wallet,
                 sticky_address,
                 worker_id,
+                worker_type,  # Pass worker_type for dev wallet ROM stickiness
                 allow_creation=True  # Now we can create
             )
         
@@ -161,6 +166,12 @@ class MiningCoordinator:
             return None
         
         challenge = selected_challenge
+        
+        # Track current challenge for this worker (for dev wallet ROM stickiness)
+        if worker_type == 'gpu':
+            self.gpu_current_challenges[worker_id] = challenge['challenge_id']
+        elif worker_type == 'cpu':
+            self.cpu_current_challenges[worker_id] = challenge['challenge_id']
             
         # Update sticky tracking for workers
         if worker_type == 'gpu' and not is_dev:
@@ -215,6 +226,7 @@ class MiningCoordinator:
         use_dev_wallet: bool,
         sticky_address: Optional[str] = None,
         worker_id: Optional[int] = None,
+        worker_type: Optional[WorkerType] = None,
         allow_creation: bool = True
     ) -> tuple[Optional[WalletOptional], bool]:
         """
@@ -226,13 +238,22 @@ class MiningCoordinator:
             use_dev_wallet: Whether to prefer dev wallet
             sticky_address: Optional sticky wallet address for CPU workers
             worker_id: Optional worker ID
+            worker_type: Optional worker type ('gpu' or 'cpu') for challenge tracking
             allow_creation: Whether to allow creating new wallets
             
         Returns:
             Tuple of (wallet, is_dev_wallet_flag)
         """
         if use_dev_wallet:
-            wallet = self._allocate_dev_wallet(pool_id, challenge['challenge_id'], allow_creation)
+            # Get current challenge being mined on this worker (for ROM stickiness)
+            current_challenge_id = None
+            if worker_id is not None and worker_type:
+                if worker_type == 'gpu':
+                    current_challenge_id = self.gpu_current_challenges.get(worker_id)
+                elif worker_type == 'cpu':
+                    current_challenge_id = self.cpu_current_challenges.get(worker_id)
+            
+            wallet = self._allocate_dev_wallet(pool_id, challenge['challenge_id'], current_challenge_id, allow_creation)
             if wallet:
                 return (wallet, True)
             if not allow_creation:
@@ -245,28 +266,80 @@ class MiningCoordinator:
         wallet = self._allocate_user_wallet(pool_id, challenge, sticky_address, worker_id, allow_creation)
         return (wallet, False)
     
-    def _allocate_dev_wallet(self, pool_id: PoolId, challenge_id: str, allow_creation: bool = True) -> Optional[WalletOptional]:
-        """Allocate a dev wallet from the pool with bounded creation attempts."""
-        # Try to allocate existing dev wallet first
+    def _allocate_dev_wallet(
+        self, 
+        pool_id: PoolId, 
+        challenge_id: str, 
+        current_challenge_id: Optional[str] = None,
+        allow_creation: bool = True
+    ) -> Optional[WalletOptional]:
+        """
+        Allocate a dev wallet from the pool with challenge-sticky logic.
+        
+        IMPROVED LOGIC:
+        - First tries to allocate a dev wallet for the CURRENT challenge (same ROM)
+        - Only switches to a different challenge if no dev wallets available for current
+        - Searches all existing dev wallets before creating a new one
+        - This prevents excessive wallet creation and minimizes ROM switching
+        
+        Args:
+            pool_id: Pool identifier
+            challenge_id: Challenge ID that needs a dev wallet
+            current_challenge_id: The challenge currently loaded in ROM (for stickiness)
+            allow_creation: Whether to create new wallets if none available
+            
+        Returns:
+            Allocated dev wallet, or None if unavailable
+        """
+        # STEP 1: Try to allocate for the CURRENT challenge (if provided and same as requested)
+        # This keeps the same ROM loaded, avoiding expensive ROM switches
+        if current_challenge_id and current_challenge_id == challenge_id:
+            wallet = wallet_pool.allocate_wallet(pool_id, current_challenge_id, require_dev=True)
+            if wallet:
+                logging.debug(f"Dev wallet allocated for current challenge {challenge_id[:8]} (same ROM)")
+                return wallet
+        
+        # STEP 2: Try to allocate for the requested challenge
+        # (might be different from current, triggering ROM switch)
         wallet = wallet_pool.allocate_wallet(pool_id, challenge_id, require_dev=True)
         if wallet:
+            if current_challenge_id and current_challenge_id != challenge_id:
+                logging.debug(f"Dev wallet allocated for different challenge {challenge_id[:8]} (ROM switch required)")
             return wallet
         
-        # Only create if allowed
+        # STEP 3: Only create if allowed and after searching all existing wallets
         if not allow_creation:
             return None
         
-        # BUG FIX: Only create ONE new dev wallet instead of infinite loop
-        # This prevents dev wallet explosion over time
-        created = wallet_pool.create_wallet(pool_id, is_dev_wallet=True)
-        if not created:
-            logging.error("Failed to create dev wallet for pool %s", pool_id)
+        # Before creating a new dev wallet, check if we have ANY dev wallets
+        # that haven't solved the current/requested challenge
+        # This prevents wallet explosion
+        from .wallet_pool import wallet_pool as wp
+        pool_stats = wp.get_pool_stats(pool_id)
+        dev_total = pool_stats.get('dev_total', 0)
+        dev_available = pool_stats.get('dev_available', 0)
+        
+        # If we have dev wallets but none are available, it means they're all in use
+        # or have solved this challenge. Creating more would just increase overhead.
+        if dev_total > 0 and dev_available == 0:
+            logging.debug(
+                f"Pool {pool_id}: {dev_total} dev wallets exist but none available for {challenge_id[:8]}, "
+                f"not creating new wallet to avoid explosion"
+            )
             return None
         
-        # Try one more time to allocate the newly created wallet
+        # STEP 4: Create a single new dev wallet as last resort
+        # Only create ONE wallet (not a batch) to minimize dev wallet count
+        logging.info(f"Creating new dev wallet for pool {pool_id} (challenge {challenge_id[:8]})")
+        created = wallet_pool.create_wallet(pool_id, is_dev_wallet=True)
+        if not created:
+            logging.error(f"Failed to create dev wallet for pool {pool_id}")
+            return None
+        
+        # STEP 5: Try one more time to allocate the newly created wallet
         wallet = wallet_pool.allocate_wallet(pool_id, challenge_id, require_dev=True)
         if not wallet:
-            logging.warning("Dev wallet created but could not be allocated for pool %s", pool_id)
+            logging.warning(f"Dev wallet created but could not be allocated for pool {pool_id}")
         return wallet
     
     def _allocate_user_wallet(
@@ -372,9 +445,13 @@ class MiningCoordinator:
             challenge_short = mining_utils.truncate_challenge_id(challenge['challenge_id'], 8)
             wallet_short = mining_utils.truncate_address(wallet['address'], 10)
             
+            # Add [DEV] indicator for dev wallets
+            is_dev = wallet.get('is_dev_wallet', False)
+            dev_indicator = "[DEV] " if is_dev else ""
+            
             logging.info(
                 f"{worker_type.upper()} {worker_id} mining {challenge_short}... "
-                f"with wallet {wallet_short}..."
+                f"with {dev_indicator}wallet {wallet_short}..."
             )
             
             self.last_logged_combos[tracker_key] = combo
