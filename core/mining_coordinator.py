@@ -98,13 +98,43 @@ class MiningCoordinator:
             elif worker_type == 'cpu':
                 sticky_address = self.cpu_sticky_wallets.get(worker_id)
         
-        # SMART CHALLENGE SELECTION: Minimize wallet creation
+        # SMART CHALLENGE SELECTION: Minimize wallet creation AND minimize ROM switching
         if not available_challenges:
             return None
         
+        # CPU WORKERS: Prefer the CURRENT challenge to avoid ROM switching
+        # This makes CPU workers behave like GPU workers - stick to one challenge
+        # until no wallets are available, then switch to the next challenge
+        current_challenge_id = None
+        if worker_type == 'cpu' and worker_id is not None:
+            current_challenge_id = self.cpu_current_challenges.get(worker_id)
+        elif worker_type == 'gpu' and worker_id is not None:
+            current_challenge_id = self.gpu_current_challenges.get(worker_id)
+        
+        # If this worker has a current challenge loaded, try it first
+        if current_challenge_id:
+            current_challenge = next((c for c in available_challenges if c['challenge_id'] == current_challenge_id), None)
+            if current_challenge:
+                # Move current challenge to front of the list to prioritize it
+                other_challenges = [c for c in available_challenges if c['challenge_id'] != current_challenge_id]
+                available_challenges = [current_challenge] + other_challenges
+                logging.debug(f"{worker_type.upper()} {worker_id}: Prioritizing current challenge {current_challenge_id[:8]} to avoid ROM switch")
+            else:
+                # Current challenge no longer available (likely expired), will select new one below
+                logging.debug(f"{worker_type.upper()} {worker_id}: Current challenge {current_challenge_id[:8]} no longer available, will switch ROMs")
+        
         # Sort challenges by discovery time (oldest first) for normal operation
         # Challenges have 'discovered_at' field from challenge_cache
-        available_challenges.sort(key=lambda c: c.get('discovered_at', ''))
+        # Only sort the non-prioritized challenges (skip first if we prioritized current)
+        if current_challenge_id and available_challenges and available_challenges[0].get('challenge_id') == current_challenge_id:
+            # Keep first challenge (current) at front, sort the rest
+            prioritized = [available_challenges[0]]
+            rest = available_challenges[1:]
+            rest.sort(key=lambda c: c.get('discovered_at', ''))
+            available_challenges = prioritized + rest
+        else:
+            # No current challenge priority, sort all normally
+            available_challenges.sort(key=lambda c: c.get('discovered_at', ''))
         
         # Detect difficulty spike: newest challenge harder than oldest?
         oldest_difficulty = int(available_challenges[0]['difficulty'], 16)
@@ -167,11 +197,22 @@ class MiningCoordinator:
         
         challenge = selected_challenge
         
-        # Track current challenge for this worker (for dev wallet ROM stickiness)
+        # Track current challenge for this worker (for ROM stickiness)
+        # Log when a worker switches to a different challenge (ROM switch)
+        previous_challenge_id = None
         if worker_type == 'gpu':
+            previous_challenge_id = self.gpu_current_challenges.get(worker_id)
             self.gpu_current_challenges[worker_id] = challenge['challenge_id']
         elif worker_type == 'cpu':
+            previous_challenge_id = self.cpu_current_challenges.get(worker_id)
             self.cpu_current_challenges[worker_id] = challenge['challenge_id']
+        
+        # Log ROM switches for monitoring and debugging
+        if previous_challenge_id and previous_challenge_id != challenge['challenge_id']:
+            logging.info(
+                f"{worker_type.upper()} {worker_id} switching ROM: "
+                f"{previous_challenge_id[:8]}... → {challenge['challenge_id'][:8]}..."
+            )
             
         # Update sticky tracking for workers
         if worker_type == 'gpu' and not is_dev:
