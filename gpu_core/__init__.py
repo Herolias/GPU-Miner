@@ -40,7 +40,7 @@ if _bin_dir.exists():
         CUDA_SOURCE = getattr(kernels_module, "CUDA_SOURCE", None)
         GPU_AVAILABLE = GPUEngine is not None and CUDA_SOURCE is not None
         if GPU_AVAILABLE:
-            print(f"INFO: Loaded Binary GPU Engine from {_platform_dir}")
+            pass # print(f"INFO: Loaded Binary GPU Engine from {_platform_dir}")
     except ImportError as exc:
         _binary_error = exc
     except Exception as exc:
@@ -59,7 +59,7 @@ if not GPU_AVAILABLE:
         CUDA_SOURCE = getattr(kernels_module, "CUDA_SOURCE", None)
         GPU_AVAILABLE = GPUEngine is not None and CUDA_SOURCE is not None
         if GPU_AVAILABLE:
-            print("INFO: Loaded Python GPU Engine (Fallback)")
+            pass # print("INFO: Loaded Python GPU Engine (Fallback)")
         if _binary_error and GPU_AVAILABLE:
             print(
                 f"Warning: Failed to load precompiled GPU binaries ({_platform_dir}): {_binary_error}. "
