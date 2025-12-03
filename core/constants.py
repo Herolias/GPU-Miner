@@ -106,7 +106,8 @@ WALLET_FILE = "wallets.db"
 USE_JSON_WALLET_POOLS = True
 
 # Batch size for CPU mining (hashes per loop)
-CPU_MINING_BATCH_SIZE = 2000
+# Increased to 50000 to reduce IPC overhead and improve efficiency
+CPU_MINING_BATCH_SIZE = 50000
 
 # Default number of CPU workers
 DEFAULT_CPU_WORKERS = 1

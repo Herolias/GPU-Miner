@@ -77,26 +77,51 @@ class MiningCoordinator:
         # All CPU workers share a single "cpu" pool, GPU workers each get their own pool
         pool_id: PoolId = "cpu" if worker_type == 'cpu' else worker_id
         
-        # Check for sticky wallet (CPU only)
+        # 1. Check for sticky wallet (User OR Dev)
         sticky_address = None
-        desired_dev_wallet = use_dev_wallet
-        if worker_type == 'cpu':
+        if worker_type == 'gpu':
+            sticky_address = self.gpu_sticky_wallets.get(worker_id)
+        elif worker_type == 'cpu':
             sticky_address = self.cpu_sticky_wallets.get(worker_id)
+            
+        # 2. Determine if we want a dev wallet
+        # Default to what the manager requested
+        desired_dev_wallet = use_dev_wallet
+        
+        # If we have a sticky wallet, we MUST use it (whether it's dev or user)
+        # to ensure we don't abandon it before finding a solution
+        if sticky_address:
+            # Check if the sticky wallet is a dev wallet
+            # We can infer this by checking if we are in a pending dev fee state (CPU)
+            # or by checking the wallet itself (more robust)
+            wallet_obj = wallet_pool.get_wallet(pool_id, sticky_address)
+            if wallet_obj:
+                is_sticky_dev = wallet_obj.get('is_dev_wallet', False)
+                
+                # Override desired_dev_wallet to match our sticky commitment
+                if is_sticky_dev:
+                    desired_dev_wallet = True
+                    # If we were requested to use dev wallet, great.
+                    # If we were requested to use user wallet, too bad, we are busy with dev.
+                else:
+                    desired_dev_wallet = False
+                    # If we were requested to use dev wallet, but we are busy with user wallet:
+                    if use_dev_wallet and worker_type == 'cpu':
+                        # Defer dev fee for CPU
+                        self.cpu_pending_dev_fee[worker_id] = True
+            else:
+                # Sticky wallet not found in pool? Should not happen.
+                # Clear it and proceed with original request
+                if worker_type == 'gpu':
+                    self.gpu_sticky_wallets.pop(worker_id, None)
+                else:
+                    self.cpu_sticky_wallets.pop(worker_id, None)
+                sticky_address = None
+
+        # CPU specific: Check pending dev fee if we are free to choose
+        if not sticky_address and worker_type == 'cpu':
             if self.cpu_pending_dev_fee.get(worker_id):
                 desired_dev_wallet = True
-            if sticky_address and desired_dev_wallet:
-                # Can't swap wallets mid-stream; defer dev fee until wallet rotates
-                self.cpu_pending_dev_fee[worker_id] = True
-                desired_dev_wallet = False
-            
-        # Select wallet first (without challenge assignment yet)
-        # Get sticky address if this worker already has one
-        sticky_address = None
-        if not desired_dev_wallet:
-            if worker_type == 'gpu':
-                sticky_address = self.gpu_sticky_wallets.get(worker_id)
-            elif worker_type == 'cpu':
-                sticky_address = self.cpu_sticky_wallets.get(worker_id)
         
         # SMART CHALLENGE SELECTION: Minimize wallet creation AND minimize ROM switching
         if not available_challenges:
@@ -180,17 +205,36 @@ class MiningCoordinator:
         
         # Only create new wallet if no existing wallet available for ANY challenge
         if not wallet:
-            # Use oldest challenge for new wallet creation
-            selected_challenge = available_challenges[0]
-            wallet, is_dev = self._select_wallet(
-                pool_id,
-                selected_challenge,
-                desired_dev_wallet,
-                sticky_address,
-                worker_id,
-                worker_type,  # Pass worker_type for dev wallet ROM stickiness
-                allow_creation=True  # Now we can create
-            )
+            # ROM OPTIMIZATION: Try to create wallet for CURRENT challenge first
+            # This avoids forcing a ROM switch just because we ran out of wallets
+            if current_challenge_id:
+                current_challenge = next((c for c in available_challenges if c['challenge_id'] == current_challenge_id), None)
+                if current_challenge:
+                    logging.debug(f"{worker_type.upper()} {worker_id}: Creating new wallet for current challenge {current_challenge_id[:8]} to maintain ROM")
+                    selected_challenge = current_challenge
+                    wallet, is_dev = self._select_wallet(
+                        pool_id,
+                        selected_challenge,
+                        desired_dev_wallet,
+                        sticky_address,
+                        worker_id,
+                        worker_type,
+                        allow_creation=True
+                    )
+
+            # If still no wallet (or no current challenge), fall back to oldest challenge
+            if not wallet:
+                # Use oldest challenge for new wallet creation
+                selected_challenge = available_challenges[0]
+                wallet, is_dev = self._select_wallet(
+                    pool_id,
+                    selected_challenge,
+                    desired_dev_wallet,
+                    sticky_address,
+                    worker_id,
+                    worker_type,  # Pass worker_type for dev wallet ROM stickiness
+                    allow_creation=True  # Now we can create
+                )
         
         if not wallet:
             return None
@@ -215,24 +259,27 @@ class MiningCoordinator:
             )
             
         # Update sticky tracking for workers
-        if worker_type == 'gpu' and not is_dev:
+        # FIX: Track sticky wallets for BOTH user and dev wallets
+        # This ensures dev wallets are not abandoned before finding a solution
+        if worker_type == 'gpu':
             # Track sticky wallet for GPU
             if worker_id not in self.gpu_sticky_wallets:
                  logging.debug(f"Coordinator: Assigned sticky wallet {wallet['address'][:8]} to GPU {worker_id}")
             self.gpu_sticky_wallets[worker_id] = wallet['address']
-        elif worker_type == 'cpu' and not is_dev:
+            
+        elif worker_type == 'cpu':
             # Track sticky wallet for CPU
             if worker_id not in self.cpu_sticky_wallets:
                  logging.info(f"Coordinator: Assigned sticky wallet {wallet['address'][:8]} to CPU worker {worker_id}")
             self.cpu_sticky_wallets[worker_id] = wallet['address']
-            if not desired_dev_wallet and worker_id in self.cpu_pending_dev_fee and not self.cpu_pending_dev_fee[worker_id]:
+            
+            # Handle pending dev fee flags
+            if is_dev:
+                # Dev wallet assignment fulfilled; clear pending flag
                 self.cpu_pending_dev_fee.pop(worker_id, None)
-        elif worker_type == 'cpu' and is_dev:
-            # Dev wallet assignment fulfilled; clear pending flag
-            self.cpu_pending_dev_fee.pop(worker_id, None)
-        elif worker_type == 'cpu' and desired_dev_wallet and not is_dev:
-            # Dev wallet was requested but unavailable; remember to try again
-            self.cpu_pending_dev_fee[worker_id] = True
+            elif desired_dev_wallet and not is_dev:
+                # Dev wallet was requested but unavailable; remember to try again
+                self.cpu_pending_dev_fee[worker_id] = True
         
         # Log new mining combination
         self._log_mining_start(worker_type, worker_id, pool_id, challenge, wallet)
@@ -429,24 +476,18 @@ class MiningCoordinator:
         if not allow_creation:
             return None
         
-        # GPU OPTIMIZATION: Create batch of wallets for GPU workers to reduce ROM switching
-       # Check if this is a GPU pool (numeric ID) vs CPU pool (string "cpu")
-        is_gpu_pool = isinstance(pool_id, int)
+        # GPU & CPU OPTIMIZATION: Create batch of wallets to reduce ROM switching
+        # Check if this is a GPU pool (numeric ID) or CPU pool (string "cpu")
+        # Both benefit from batch creation
         
-        if is_gpu_pool:
-            # GPU workers: Create 20 wallets at once to minimize ROM switches
-            created_count = wallet_pool.create_wallets_batch(pool_id, count=20, is_dev_wallet=False)
-            if created_count > 0:
-                logging.info(f"Created batch of {created_count} wallets for GPU {pool_id}, reducing ROM switching")
-                # Now try to allocate one of the newly created wallets
-                return wallet_pool.allocate_wallet(pool_id, challenge_id)
-            return None
-        else:
-            # CPU workers: Create single wallet (original behavior)
-            created = wallet_pool.create_wallet(pool_id, is_dev_wallet=False)
-            if not created:
-                return None
+        # Create batch of wallets at once to minimize ROM switches
+        # For CPU, this prevents starvation when many workers are active
+        created_count = wallet_pool.create_wallets_batch(pool_id, count=20, is_dev_wallet=False)
+        if created_count > 0:
+            logging.info(f"Created batch of {created_count} wallets for pool {pool_id}, reducing ROM switching")
+            # Now try to allocate one of the newly created wallets
             return wallet_pool.allocate_wallet(pool_id, challenge_id)
+        return None
 
     def clear_sticky_wallet(self, worker_id: int, worker_type: WorkerType = 'cpu') -> None:
         """Clear the sticky wallet assignment for a worker."""

@@ -680,9 +680,20 @@ class WalletPool:
                 for wallet in pool.get("wallets", []):
                     if wallet.get("address") == address:
                         # Update state
+                        # OPTIMIZATION: Avoid disk write if state hasn't changed and allocation is recent
+                        now = datetime.now()
+                        last_alloc = datetime.fromisoformat(wallet.get("allocated_at", "2000-01-01T00:00:00"))
+                        time_diff = (now - last_alloc).total_seconds()
+                        
+                        if (wallet.get("in_use") and 
+                            wallet.get("current_challenge") == challenge_id and 
+                            time_diff < 60):
+                            # State is already correct and recently updated, skip write
+                            return True
+                            
                         wallet["in_use"] = True
                         wallet["current_challenge"] = challenge_id
-                        wallet["allocated_at"] = datetime.now().isoformat()
+                        wallet["allocated_at"] = now.isoformat()
                         
                         self._save_pool(pool_id, pool)
                         return True

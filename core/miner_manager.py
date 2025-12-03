@@ -659,7 +659,12 @@ class MinerManager:
         if num_cpus > 0:
             logging.info(f"Creating shared wallet pool for {num_cpus} CPU workers...")
             pool_id = "cpu"
-            wallet_pool.ensure_wallets(pool_id, wallets_per_gpu)
+            
+            # CPU workers need more wallets because they share a single pool
+            # Ensure at least 2 wallets per worker to prevent starvation
+            cpu_pool_target = max(wallets_per_gpu, num_cpus * 2)
+            
+            wallet_pool.ensure_wallets(pool_id, cpu_pool_target)
             wallet_pool.ensure_dev_wallets(pool_id, dev_wallet_target)
             wallet_pool.start_consolidation_thread(pool_id)
             stats = wallet_pool.get_pool_stats(pool_id)
@@ -708,7 +713,8 @@ class MinerManager:
         )
         
         # Clear sticky wallet assignment when solution is found
-        if response.get('found') and not is_dev:
+        # FIX: Clear for BOTH user and dev wallets so they can pick up new work
+        if response.get('found'):
             # Register solution on dashboard
             dashboard.register_solution(worker_type, worker_id, challenge_id, wallet_addr)
             

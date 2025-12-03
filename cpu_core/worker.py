@@ -113,10 +113,8 @@ class CPUWorker(mp.Process):
             # Preimage: nonce_hex + salt_prefix
             
             # Batch size for reporting/checking
-            # Reduced from 2000 to 50 for faster feedback during testing
-            # Batch size for reporting/checking
-            # Increased to 5000 to improve CPU utilization and reduce overhead
-            loop_batch = 5000
+            # Use constant from configuration
+            loop_batch = CPU_MINING_BATCH_SIZE
             
             start_time = time.time()
             
